@@ -1,6 +1,6 @@
 # CompassRAG 项目概述
 
-> 状态：v0.2（2026-10-03）——机制栈与全部待商讨项定稿，进入实施（M1 启动）。
+> 状态：v0.3（2026-10-03）——S1 地基完成；S2 检索半边完成（BM25 召回基线出数）；LLM 通道弃 NIM 改 opencode go（等待接入）。逐单元进展见第 11 节。
 
 ## 1. 一句话定位
 
@@ -65,21 +65,21 @@
 - Agentic RAG Survey（2501.09136，433 引）：领域综述
 
 **工程栈（已定，2026-10-03）**
-- LLM：DeepSeek-V4.1-Flash 单模型全流程（路由 / 分解 / 改写 / 抽取 / 生成 / judge 同模型）；通道 = NVIDIA NIM 免费额度起步 → opencode go 订阅，openai 兼容客户端，base_url / model 走配置一键切换
+- LLM：DeepSeek-V4.1-Flash 单模型全流程（路由 / 分解 / 改写 / 抽取 / 生成 / judge 同模型）；通道 = opencode go 订阅（NIM 实测延迟过高，弃用），openai 兼容客户端，base_url / model 走配置一键切换
 - Embedding：NIM 托管 embedding 模型为主，本地 BGE-M3 兜底
 - 工程立场：不引入 LlamaIndex / Haystack 重框架——主流组件库（bm25s + FAISS / sqlite-vec + openai 兼容客户端）+ 薄自建封装，保证消融开关与逐 token 遥测全链路可控
 
 ## 8. 实施步骤（按步骤推进，不按周排期）
 
-| 步骤 | 内容 | 验收标准（做完的标志） |
-|---|---|---|
-| S1 地基 | 仓库脚手架；`llm/` 客户端封装（openai 兼容 + 逐 token 遥测）+ NIM DeepSeek-V4.1-Flash 联通；embedding 通路（NIM / 本地 BGE-M3 兜底）；三基准接入与分层抽样（清单入仓）；distractor 语料合并去重 + 分块 | 冒烟调用带遥测记录；抽样清单重跑可复现；语料统计表（块数 / token 数） |
-| S2 朴素基线（消融第 0 级） | `IndexView` flat 模式（仅 chunk 层）+ BM25 / 向量混合检索 + RRF 融合去重 + 直接生成；`run_eval.py`（限并发 + 断点续跑）+ EM / F1 / 召回率计算 | 主三基准 300×3 出第一组基线数字（消融表 baseline 行） |
-| S3 wiki 索引（③） | 聚类 → LLM 生成条目（标题 / 摘要 / 源块 / see-also）→ 链接清洗（分类页可选）；IndexView 三路检索：条目层 + 源块捞回 + 链接扩展，chunk 层兜底 | +③ 行数字（对比 S2 的提升）；索引内容可人工翻阅 |
-| S4 查询侧（②） | 多跳分解 + HyDE 假答案改写（默认开启），接入检索循环 | +② 行数字；消融开关全走 configs |
-| S5 决策层（①） | 问题路由（直答 / 单跳 / 多跳）→ 检索计划与预算 → 迭代循环 + 充分度早停；同预算对比实验 | +① 行数字；成本遥测报表（检索轮数 / token 分布）；**④ go/no-go 决策点**（三条件见第 9 节） |
-| S6 自诊闭环（④，条件触发） | 证据-论断对齐检查；失败分型；修复动作（换词重查 / 换索引视图 / 拆细）；MultiHop-RAG null query 检测率与拒答 | +④ 行数字与可靠性叙事；若砍 → 降级为 30 例失败分型 case study |
-| S7 全量评测与交付 | 全基准全消融正式表；分题型统计（按跳数深度）；FRAMES 三轴 LLM-judge；README（架构图 + 消融表 + 指南）；CLI 完善 + Streamlit demo；复盘博客；GitHub 重名补查建仓 | 开源交付物齐全，消融表完整 |
+| 步骤 | 内容 | 验收标准（做完的标志） | 状态 |
+|---|---|---|---|
+| S1 地基 | 仓库脚手架；`llm/` 客户端封装（openai 兼容 + 逐 token 遥测）+ LLM 通道联通；embedding 通路；三基准接入与分层抽样（清单入仓）；distractor 语料合并去重 + 分块 | 冒烟调用带遥测记录；抽样清单重跑可复现；语料统计表（块数 / token 数） | ✅ 2026-10-03（冒烟待新通道，见第 11 节） |
+| S2 朴素基线（消融第 0 级） | `IndexView` flat 模式（仅 chunk 层）+ BM25 / 向量混合检索 + RRF 融合去重 + 直接生成；`run_eval.py`（限并发 + 断点续跑）+ EM / F1 / 召回率计算 | 主三基准 300×3 出第一组基线数字（消融表 baseline 行） | ◐ 检索半边 2026-10-03 出数；生成半边等 LLM 通道 |
+| S3 wiki 索引（③） | 聚类 → LLM 生成条目（标题 / 摘要 / 源块 / see-also）→ 链接清洗（分类页可选）；IndexView 三路检索：条目层 + 源块捞回 + 链接扩展，chunk 层兜底 | +③ 行数字（对比 S2 的提升）；索引内容可人工翻阅 | 未开始 |
+| S4 查询侧（②） | 多跳分解 + HyDE 假答案改写（默认开启），接入检索循环 | +② 行数字；消融开关全走 configs | 未开始 |
+| S5 决策层（①） | 问题路由（直答 / 单跳 / 多跳）→ 检索计划与预算 → 迭代循环 + 充分度早停；同预算对比实验 | +① 行数字；成本遥测报表（检索轮数 / token 分布）；**④ go/no-go 决策点**（三条件见第 9 节） | 未开始 |
+| S6 自诊闭环（④，条件触发） | 证据-论断对齐检查；失败分型；修复动作（换词重查 / 换索引视图 / 拆细）；MultiHop-RAG null query 检测率与拒答 | +④ 行数字与可靠性叙事；若砍 → 降级为 30 例失败分型 case study | 未开始 |
+| S7 全量评测与交付 | 全基准全消融正式表；分题型统计（按跳数深度）；FRAMES 三轴 LLM-judge；README（架构图 + 消融表 + 指南）；CLI 完善 + Streamlit demo；复盘博客；GitHub 重名补查建仓 | 开源交付物齐全，消融表完整 | 未开始 |
 
 外部求职日历仅作提醒、不作排期依据：10/20 开投时最好 S1-S3 已完成（有 demo 有初步数字）；11 月面试期消融表齐全。
 
@@ -101,3 +101,15 @@
 - 2026-10-03（深夜）：命名 CompassRAG——罗盘对应"检索决策者"身份；arXiv 查重通过（StratRAG 被占、其余候选弃用理由见第 1 节）；GitHub 重名建仓前补查。
 - 2026-10-03（实施前逐项商讨）：价格不设限；取消多方法对比（选定即执行）；③定 wiki 式分层摘要索引；②HyDE 默认开启；工程 = 主流组件 + 薄自建封装（不用重框架）；LLM 定 DeepSeek-V4.1-Flash（NIM → opencode go）；语料定 distractor 设定；抽样 300/基准分层 + FRAMES 全量；demo = CLI 先行 + Streamlit；README 中文为主 + 英文 Quickstart。项目进入实施。
 - 2026-10-03（计划改制）：里程碑由周制（M1-M5）改为步骤制（S1-S7），不按周排期、逐步验收推进；④决策点改挂 S5 完成后；外部求职日历仅作提醒不作排期。
+- 2026-10-03（深夜）：LLM 通道弃 NVIDIA NIM（实测响应过慢），直接接 opencode go 订阅；确立工作规矩——每完成一个工作单元即 git 提交推送并实时更新第 11 节进展记录。
+
+## 11. 进展记录（每完成一个工作单元实时更新）
+
+- **2026-10-03 · S1 地基完成**（commits `dc610c7..cc172f6`，测试 33/33）
+  - `llm/` 客户端 + 逐调用 token 遥测（chat / embed，失败也记录）；三基准接入与归一化——实数核对通过（HotpotQA 7405 / 2Wiki 12576 / MuSiQue 2417 answerable）；分层抽样 300×3（seed=42，两遍输出哈希一致，清单 + manifest 入仓）；全量 distractor 语料 **146,574 块 / ≈1750 万 token**（hotpotqa 66946 / 2wiki 58510 / musique 21118）。
+  - fresh review（独立审查 agent）：1 Critical + 3 Important 当场修复（语料目录按模式编码防覆盖；块上移除 `is_supporting`——证据归属改评测期按题 join；下载产物解析校验；失败调用遥测），9 项 minor 缓办记账（`.superpowers/sdd/PROJECT.md/progress.md`）。
+  - 遗留：NIM 冒烟因通道切换作废，待 opencode go 接入后跑 `scripts/smoke_llm.py` 补上"冒烟带遥测"验收项。
+- **2026-10-03 · S2 检索半边完成（零 API）**（commits `5d695cf..206f2bb`，测试 49/49）
+  - SQuAD 口径 EM/F1 + 支撑段落 recall@k / full_hit@k 指标库；RRF(k=60) 融合 + chunk_id 去重；BM25 检索通路（bm25s，标题+正文联合索引，三基准索引已缓存）；评测骨架（逐题增量落盘 + 断点续跑）。
+  - **BM25 检索基线（300×3 实跑）**：hotpotqa recall@5/10/20 = 0.678/0.782/0.847，full_hit@20 = 0.703；2wiki = 0.621/0.674/0.712，full_hit@20 = 0.417；musique = 0.474/0.530/0.589，**full_hit@5 仅 0.157**——naive 单轮检索凑不齐证据的量化证据，消融阶梯的起点数字（`runs/retrieval_bm25/`）。
+  - 遗留：生成半边（直接生成答案 → EM/F1 → 完整第 0 级行）等 LLM 通道；向量路 embedding 选型（opencode go 若无 embedding 端点则本地 BGE-M3 兜底）。
