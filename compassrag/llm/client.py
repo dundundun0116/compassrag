@@ -70,8 +70,13 @@ class LLMClient:
         model = model or self.model
         start = time.perf_counter()
         kwargs = {"max_tokens": max_tokens} if max_tokens else {}
-        resp = self._client.chat.completions.create(
-            model=model, messages=messages, temperature=temperature, **kwargs)
+        try:
+            resp = self._client.chat.completions.create(
+                model=model, messages=messages, temperature=temperature, **kwargs)
+        except Exception as e:
+            self.telemetry.record(kind="chat", tag=tag, model=model,
+                                  latency_ms=(time.perf_counter() - start) * 1000, error=e)
+            raise
         latency = (time.perf_counter() - start) * 1000
         usage = resp.usage
         row = self.telemetry.record(
@@ -99,13 +104,20 @@ class LLMClient:
         prompt_tokens = 0
         total_tokens = 0
         start = time.perf_counter()
-        for batch in batch_texts(texts, self._batch_size):
-            resp = self._embed_client.embeddings.create(model=self.embedding_model, input=batch)
-            vectors.extend(d.embedding for d in resp.data)
-            usage = getattr(resp, "usage", None)
-            if usage:
-                prompt_tokens += usage.prompt_tokens or 0
-                total_tokens += usage.total_tokens or 0
+        try:
+            for batch in batch_texts(texts, self._batch_size):
+                resp = self._embed_client.embeddings.create(model=self.embedding_model, input=batch)
+                vectors.extend(d.embedding for d in resp.data)
+                usage = getattr(resp, "usage", None)
+                if usage:
+                    prompt_tokens += usage.prompt_tokens or 0
+                    total_tokens += usage.total_tokens or 0
+        except Exception as e:
+            self.telemetry.record(kind="embed", tag=tag, model=self.embedding_model,
+                                  prompt_tokens=prompt_tokens, total_tokens=total_tokens,
+                                  latency_ms=(time.perf_counter() - start) * 1000,
+                                  n_items=len(texts), error=e)
+            raise
         latency = (time.perf_counter() - start) * 1000
         self.telemetry.record(kind="embed", tag=tag, model=self.embedding_model,
                               prompt_tokens=prompt_tokens, total_tokens=total_tokens,

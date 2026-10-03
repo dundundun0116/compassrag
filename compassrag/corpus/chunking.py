@@ -66,7 +66,11 @@ def chunk_text(text: str, max_chars: int = MAX_CHARS_DEFAULT,
 def iter_chunks(records: list[dict], benchmark: str, *,
                 max_chars: int = MAX_CHARS_DEFAULT,
                 overlap: int = OVERLAP_DEFAULT):
-    """遍历归一化记录的段落 → 唯一块字典流（同 (title, text) 只出一次）。"""
+    """遍历归一化记录的段落 → 唯一块字典流（同 (title, text) 只出一次）。
+
+    块上不落 is_supporting：同一段落可对甲题是支撑、对乙题是干扰，
+    证据归属由评测期按各题的支撑标题 join 决定；question_id 仅作首见溯源。
+    """
     seen: set[str] = set()
     for r in records:
         for p in r["paragraphs"]:
@@ -83,5 +87,4 @@ def iter_chunks(records: list[dict], benchmark: str, *,
                     "text": sub,
                     "n_chars": len(sub),
                     "n_tokens_est": len(sub) // 4,
-                    "is_supporting": bool(p["is_supporting"]),
                 }

@@ -51,4 +51,8 @@ def test_iter_chunks_dedups_shared_paragraphs():
     ids = [c["chunk_id"] for c in chunks]
     assert len(ids) == len(set(ids)) == 2
     shared = [c for c in chunks if c["title"] == "Shared"][0]
-    assert shared["benchmark"] == "benchX" and shared["is_supporting"] is True
+    assert shared["benchmark"] == "benchX"
+    # 同一段落可对甲题是支撑、对乙题是干扰：块上不得固定 is_supporting，
+    # 证据归属由评测期按题的支撑标题 join 决定；question_id 仅作首见溯源。
+    assert "is_supporting" not in shared
+    assert "question_id" in shared

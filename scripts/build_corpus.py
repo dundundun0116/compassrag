@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""构建 distractor 共享检索语料库（默认全量 dev context 池）。"""
+"""构建 distractor 共享检索语料库（默认全量 dev context 池）。
+
+输出目录按模式编码：data/cache/corpus/{bench}__{mode}/，互不覆盖。
+"""
 
 import argparse
 import sys
@@ -22,18 +25,18 @@ def main():
     ap.add_argument("--out-dir", default=REPO_ROOT / "data" / "cache" / "corpus")
     args = ap.parse_args()
 
-    print(f"{'基准':<10} {'模式':<10} {'题数':>6} {'唯一段落':>8} {'块数':>7} {'支撑块':>7} {'≈token':>10}")
+    stats_list = []
     for bench in [b.strip() for b in args.benchmarks.split(",")]:
-        s = build_corpus(bench, args.raw_dir, args.out_dir,
-                         from_samples=args.from_samples, samples_dir=args.samples_dir)
+        stats_list.append(build_corpus(bench, args.raw_dir, args.out_dir,
+                                       from_samples=args.from_samples,
+                                       samples_dir=args.samples_dir))
+
+    print(f"{'基准':<10} {'模式':<10} {'题数':>6} {'唯一段落':>8} {'块数':>7} {'≈token':>10} "
+          f"{'块长min/中位/p95/max':>22}")
+    for s in stats_list:
         print(f"{s['benchmark']:<10} {s['mode']:<10} {s['n_questions']:>6} "
-              f"{s['n_unique_paragraphs']:>8} {s['n_chunks']:>7} {s['n_supporting_chunks']:>7} "
-              f"{s['n_tokens_est_total']:>10}")
-    print("\n块长（字符）: " + ", ".join(
-        f"{bench}: min={s['char_len_min']} 中位={s['char_len_median']} p95={s['char_len_p95']} max={s['char_len_max']}"
-        for bench in [b.strip() for b in args.benchmarks.split(",")]
-        for s in [__import__("json").loads(
-            (Path(args.out_dir) / bench / "stats.json").read_text())]))
+              f"{s['n_unique_paragraphs']:>8} {s['n_chunks']:>7} {s['n_tokens_est_total']:>10} "
+              f"{s['char_len_min']}/{s['char_len_median']}/{s['char_len_p95']}/{s['char_len_max']:>18}")
 
 
 if __name__ == "__main__":

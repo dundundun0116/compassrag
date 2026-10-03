@@ -1,6 +1,18 @@
+import json
+
 import pytest
 
 from compassrag.llm.client import LLMClient, LLMError, LLMResponse, batch_texts
+
+
+def _make_client(tmp_path):
+    (tmp_path / ".env").write_text(
+        "LLM_BASE_URL=https://example.invalid/v1\n"
+        "LLM_API_KEY=sk-test\n"
+        "LLM_MODEL=test-model\n"
+        "EMBEDDING_MODEL=test-embed\n"
+    )
+    return LLMClient(repo_root=tmp_path)
 
 
 def test_batch_texts_sizes():
@@ -38,3 +50,29 @@ def test_init_reads_config_and_defaults(tmp_path, monkeypatch):
 def test_llm_response_fields():
     r = LLMResponse(text="hi", model="m", prompt_tokens=1, completion_tokens=2, total_tokens=3, latency_ms=4.0)
     assert (r.text, r.model, r.total_tokens) == ("hi", "m", 3)
+
+
+def test_chat_failure_recorded_then_raised(tmp_path):
+    client = _make_client(tmp_path)
+
+    def boom(**kwargs):
+        raise RuntimeError("boom: quota exhausted")
+
+    client._client.chat.completions.create = boom
+    with pytest.raises(RuntimeError, match="boom"):
+        client.chat([{"role": "user", "content": "hi"}], tag="smoke")
+    rows = [json.loads(l) for l in (tmp_path / "runs" / "telemetry.jsonl").read_text().splitlines()]
+    assert rows[-1]["kind"] == "chat" and rows[-1]["error"].startswith("boom")
+
+
+def test_embed_failure_recorded_then_raised(tmp_path):
+    client = _make_client(tmp_path)
+
+    def boom(**kwargs):
+        raise RuntimeError("boom: endpoint down")
+
+    client._client.embeddings.create = boom
+    with pytest.raises(RuntimeError, match="boom"):
+        client.embed(["a", "b"], tag="smoke")
+    rows = [json.loads(l) for l in (tmp_path / "runs" / "telemetry.jsonl").read_text().splitlines()]
+    assert rows[-1]["kind"] == "embed" and rows[-1]["error"].startswith("boom")

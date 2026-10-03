@@ -4,7 +4,8 @@
   id: str            原始题 id
   question: str
   answer: str
-  stratum: str       分层键（hotpotqa: level；musique/2wiki: 支撑段落数）
+  type: str|None     题型（hotpotqa: comparison/bridge…；2wiki: comparison/compositional/bridge_comparison/inference）
+  stratum: str       分层键（hotpotqa: level；2wiki: 题型 type；musique: 跳数）
   paragraphs: [{title, text, is_supporting}]
 """
 
@@ -148,6 +149,15 @@ def _hf_candidate_urls(repo: str, pattern: str) -> list[str]:
     return [f"{endpoint}/datasets/{repo}/resolve/main/{m}" for m in matches]
 
 
+def _is_parsable(path: Path) -> bool:
+    """缓存/下载产物必须是可完整解析的数据文件，防止错误页毒化缓存。"""
+    try:
+        _load_items(path)
+        return True
+    except Exception:  # noqa: BLE001 任何解析失败都视为无效产物
+        return False
+
+
 def download_dev(bench: str, raw_dir: Path = RAW_DIR_DEFAULT) -> Path:
     """下载 bench 的 dev 原始文件（带缓存），返回本地路径。"""
     if bench not in BENCHMARKS:
@@ -167,6 +177,9 @@ def download_dev(bench: str, raw_dir: Path = RAW_DIR_DEFAULT) -> Path:
             for url in urls:
                 try:
                     path = _download(url, dest_dir / Path(url.split("?")[0]).name)
+                    if not _is_parsable(path):
+                        path.unlink(missing_ok=True)
+                        raise RuntimeError("内容无法解析为数据文件（疑似错误页），已删除")
                     print(f"[{bench}] 已下载 {url} -> {path} ({path.stat().st_size / 1e6:.1f} MB)")
                     return path
                 except Exception as e:  # noqa: BLE001 逐候选降级
