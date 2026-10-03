@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "compassrag"
+version = "0.1.0"
+description = "CompassRAG: adaptive retrieval decisions over structured indexes for multi-hop QA"
+requires-python = ">=3.10"
+dependencies = [
+    "openai>=1.40",
+    "python-dotenv>=1.0",
+    "pyyaml>=6.0",
+    "huggingface_hub>=0.24",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.setuptools.packages.find]
+include = ["compassrag*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
