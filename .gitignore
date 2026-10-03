@@ -1,0 +1,29 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---- 密钥与环境（绝不入库）----
+.env
+.env.*
+!.env.example
+
+# ---- 数据：data/samples 抽样清单入仓；缓存与原始大文件不入 ----
+data/cache/
+data/raw/
+*.parquet
+*.faiss
+
+# ---- 实验产物 ----
+runs/
+outputs/
+
+# ---- macOS / IDE ----
+.DS_Store
+.idea/
+.vscode/
