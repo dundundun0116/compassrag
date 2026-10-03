@@ -23,20 +23,19 @@ RAW_DIR_DEFAULT = Path(__file__).resolve().parents[2] / "data" / "raw"
 
 _UA = {"User-Agent": "CompassRAG/0.1 (research; +https://github.com/dundundun0116/compassrag)"}
 
-# 每个基准的候选来源，依次尝试：direct = 直接 URL；hf = HF 数据集仓 + 文件名匹配
+# 每个基准的候选来源，依次尝试：
+# direct = 直接 URL；hf = HF 数据集仓 JSON/JSONL + 文件名匹配；hf_parquet = HF 仓 parquet
 _SOURCES = {
     "hotpotqa": [
         ("direct", "https://curtis.ml.cmu.edu/datasets/hotpot/hotpot_dev_distractor_v1.json"),
-        ("hf", "hotpotqa/hotpot_qa", r"(^|/)hotpot_dev_distractor_v1\.json$"),
+        ("hf_parquet", "hotpotqa/hotpot_qa", r"distractor/validation-.*\.parquet$"),
     ],
     "musique": [
-        ("hf", "dgslibisey/MuSiQue", r"musique_v1\.0_dev\.jsonl$"),
-        ("direct", "https://raw.githubusercontent.com/stanfordnlp/musique/main/data/musique_v1.0_dev.jsonl"),
+        ("hf", "dgslibisey/MuSiQue", r"musique_(ans_)?v1\.0_dev\.jsonl$"),
     ],
     "2wiki": [
-        ("hf", "framolfese/2WikiMultiHopQA", r"(^|/)dev\.json$"),
-        ("hf", "xanhho/2WikiMultihopQA", r"(^|/)dev\.json$"),
-        ("hf", "scholarly-shadows-syndicate/2WikiMultihopQA", r"(^|/)dev\.json$"),
+        ("hf_parquet", "framolfese/2WikiMultihopQA", r"(^|/)validation-.*\.parquet$"),
+        ("hf_parquet", "xanhho/2WikiMultihopQA", r"(^|/)dev\.parquet$"),
     ],
 }
 
@@ -58,6 +57,7 @@ def normalize_hotpotqa(item: dict) -> dict:
         "id": item["_id"],
         "question": item["question"],
         "answer": item["answer"],
+        "type": item.get("type"),
         "stratum": item.get("level", "unknown"),
         "paragraphs": [
             {"title": t, "text": " ".join(sents), "is_supporting": t in titles}
@@ -73,7 +73,8 @@ def normalize_2wiki(item: dict) -> dict:
         "id": item["_id"],
         "question": item["question"],
         "answer": item["answer"],
-        "stratum": str(len(titles)),
+        "type": item.get("type"),
+        "stratum": item.get("type") or str(len(titles)),
         "paragraphs": [
             {"title": t, "text": " ".join(sents), "is_supporting": t in titles}
             for t, sents in item["context"]
@@ -96,6 +97,23 @@ def normalize_musique(item: dict) -> dict:
 
 
 _NORMALIZERS = {"hotpotqa": normalize_hotpotqa, "2wiki": normalize_2wiki, "musique": normalize_musique}
+
+
+def adapt_parquet_row(bench: str, row: dict) -> dict:
+    """HF parquet 行（struct-of-lists）→ 旧版 JSON 条目形状，供 normalize_* 消费。"""
+    ctx = row["context"]
+    sf = row["supporting_facts"]
+    item = {
+        "_id": row["id"],
+        "question": row["question"],
+        "answer": row["answer"],
+        "type": row.get("type"),
+        "context": list(zip(ctx["title"], ctx["sentences"])),
+        "supporting_facts": {"title": list(sf["title"]), "sent_id": list(sf["sent_id"])},
+    }
+    if bench == "hotpotqa":
+        item["level"] = row.get("level")
+    return item
 
 
 # ---------- 下载与加载 ----------
@@ -123,7 +141,7 @@ def _hf_candidate_urls(repo: str, pattern: str) -> list[str]:
     rx = re.compile(pattern)
     matches = [f for f in files if rx.search(f)]
     if not matches:
-        return []
+        raise ValueError(f"{repo} 中无匹配 {pattern!r} 的文件（全部：{files[:20]}）")
     # 多个匹配时取最浅层级、文件名最小者，保证确定性
     matches.sort(key=lambda p: (p.count("/"), p))
     endpoint = (os.environ.get("HF_ENDPOINT") or "https://huggingface.co").rstrip("/")
@@ -135,7 +153,7 @@ def download_dev(bench: str, raw_dir: Path = RAW_DIR_DEFAULT) -> Path:
     if bench not in BENCHMARKS:
         raise ValueError(f"未知基准 {bench!r}，可选：{BENCHMARKS}")
     dest_dir = Path(raw_dir) / bench
-    existing = sorted(dest_dir.glob("dev.*")) if dest_dir.exists() else []
+    existing = sorted(p for p in dest_dir.glob("*") if p.is_file() and p.suffix != ".part") if dest_dir.exists() else []
     if existing:
         return existing[0]
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -158,17 +176,21 @@ def download_dev(bench: str, raw_dir: Path = RAW_DIR_DEFAULT) -> Path:
     raise RuntimeError(f"[{bench}] 所有候选来源均失败：\n" + "\n".join(errors))
 
 
-def _load_json_or_jsonl(path: Path) -> list[dict]:
-    text = path.read_text(encoding="utf-8")
+def _load_items(path: Path) -> list[dict]:
     if path.suffix == ".jsonl":
-        return [json.loads(line) for line in text.splitlines() if line.strip()]
-    return json.loads(text)
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if path.suffix == ".parquet":
+        import pyarrow.parquet as pq
+        return pq.read_table(path).to_pylist()
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def load_dev(bench: str, raw_dir: Path = RAW_DIR_DEFAULT) -> list[dict]:
     """加载并归一化 dev 集，按 id 排序保证确定性。"""
     path = download_dev(bench, raw_dir)
-    items = _load_json_or_jsonl(path)
+    items = _load_items(path)
+    if path.suffix == ".parquet":
+        items = [adapt_parquet_row(bench, it) for it in items]
     normalize = _NORMALIZERS[bench]
     records = [normalize(it) for it in items if it.get("question") and it.get("answer")]
     records.sort(key=lambda r: r["id"])
