@@ -3,19 +3,26 @@
 
 模式：bm25 / dense / hybrid（两路 RRF）/ wiki（三路检索）/ hybrid_wiki（三路等权 RRF）
      ——以上为既有模式；
-修订模式（2026-10-10，针对 hybrid_wiki 被稀释的修订实验）：
+wiki 修订模式（2026-10-10，针对 hybrid_wiki 被稀释的修订实验，已定案无净增益）：
      hybrid_wwiki  加权 RRF：wiki 路票权 --wiki-weight（默认 0.5）、贡献深度截断 --wiki-depth（0=不截断）
      hybrid_eprior 条目层先验重排：hybrid 宽候选 + --entry-boost × 条目先验分（1/(60+条目名次)）
                    重排；--entry-expand 时从命中条目内部补捞候选（只调座次为主，不与主路竞争）
+实体图模式（2026-10-10，HippoRAG 式索引层重构）：
+     kg            纯 PPR 排名：查询实体 → 图节点种子 → Personalized PageRank → 块级聚合
+     hybrid_kg     三路等权 RRF（bm25 + dense + kg）
+     hybrid_kgw    加权 RRF：kg 路票权 --kg-weight
+     hybrid_kgboost重排：hybrid 宽候选 + --kg-boost × 归一化 PPR 块分
+     注：kg* 需要 wiki 所需的向量化产物 + 建好的实体图（scripts/build_kg.py --finalize）
+     + 查询 NER 缓存（scripts/ner_queries.py；缺失时自动回退整查询嵌入选种）。
 产出 runs/retrieval_{模式名(含参数)}/{bench}.jsonl（逐题，可断点续跑）+ 汇总表。
-dense/hybrid/wiki 需要向量化产物（scripts/embed_corpus.py）；wiki/hybrid_wiki 还需
-wiki 索引（scripts/build_wiki.py）。
 """
 
 import argparse
 import json
 import sys
 from pathlib import Path
+
+import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
@@ -41,7 +48,20 @@ def _parse_mode(spec: str, args) -> tuple[str, str]:
     if spec == "hybrid_eprior":
         out = f"hybrid_eprior_e{args.entry_top}b{args.entry_boost:g}" + ("_x" if args.entry_expand else "")
         return "hybrid_eprior", out
+    if spec == "hybrid_kgw":
+        return "hybrid_kgw", f"hybrid_kgw_w{args.kg_weight:g}"
+    if spec == "hybrid_kgboost":
+        return "hybrid_kgboost", f"hybrid_kgboost_b{args.kg_boost:g}"
     return spec, spec
+
+
+def _load_query_entities(kg_dir: Path) -> dict[str, list[str]]:
+    """查询 NER 缓存（按问题文本索引）；缺失时检索侧回退整查询嵌入选种。"""
+    path = Path(kg_dir) / "query_entities.jsonl"
+    if not path.exists():
+        return {}
+    return {r["question"]: r.get("entities", [])
+            for r in map(json.loads, path.read_text(encoding="utf-8").splitlines()) if r.strip()}
 
 
 def _build_searcher(family, bench, chunks, chunk_ids, args, embedder):
@@ -49,7 +69,10 @@ def _build_searcher(family, bench, chunks, chunk_ids, args, embedder):
     bm25 = None
     dense = None
     wiki = None
-    if family in ("bm25", "hybrid", "hybrid_wiki", "hybrid_wwiki", "hybrid_eprior"):
+    kg = None
+    ner_cache: dict[str, list[str]] = {}
+    if family in ("bm25", "hybrid", "hybrid_wiki", "hybrid_wwiki", "hybrid_eprior",
+                  "kg", "hybrid_kg", "hybrid_kgw", "hybrid_kgboost"):
         index_dir = Path(args.index_dir) / f"{bench}__full_dev"
         if (index_dir / "chunk_ids.json").exists():
             bm25 = BM25Index.load(index_dir)
@@ -57,11 +80,24 @@ def _build_searcher(family, bench, chunks, chunk_ids, args, embedder):
             print(f"[{bench}] 建 BM25 索引（{len(chunks)} 块）…")
             bm25 = BM25Index.build(chunks)
             bm25.save(index_dir)
-    if family in ("dense", "hybrid", "wiki", "hybrid_wiki", "hybrid_wwiki", "hybrid_eprior"):
+    if family in ("dense", "hybrid", "wiki", "hybrid_wiki", "hybrid_wwiki", "hybrid_eprior",
+                  "kg", "hybrid_kg", "hybrid_kgw", "hybrid_kgboost"):
         dense = DenseIndex.load(Path(args.embeddings_dir) / f"{bench}__full_dev",
                                 chunk_ids, embedder=embedder)
     if family in ("wiki", "hybrid_wiki", "hybrid_wwiki", "hybrid_eprior"):
         wiki = WikiIndex.load(Path(args.wiki_dir) / f"{bench}__full_dev", dense=dense, chunks=chunks)
+    if family in ("kg", "hybrid_kg", "hybrid_kgw", "hybrid_kgboost"):
+        from compassrag.index.kg import EntityGraph
+        kg_dir = Path(args.kg_dir) / f"{bench}__full_dev"
+        kg = EntityGraph.load(kg_dir)
+        ner_cache = _load_query_entities(kg_dir)
+        print(f"[{bench}] 实体图：{len(kg.nodes)} 节点 / NER 缓存 {len(ner_cache)} 题")
+
+    def kg_search(query, k):
+        qv = np.asarray(embedder.encode([query])[0], dtype=np.float32)
+        seeds = kg.match_seeds(qv, entities=ner_cache.get(query), embedder=embedder)
+        ppr = kg.ppr(seeds, damping=args.kg_damping)
+        return kg.rank_passages(ppr, k=k)
 
     def search(query, k):
         if family == "bm25":
@@ -70,6 +106,21 @@ def _build_searcher(family, bench, chunks, chunk_ids, args, embedder):
             return dense.search(query, k=k)
         if family == "wiki":
             return wiki.search(query, k=k)
+        if family == "kg":
+            return kg_search(query, k)
+        if family == "hybrid_kgw":
+            routes = [[cid for cid, _ in bm25.search(query, k=k)],
+                      [cid for cid, _ in dense.search(query, k=k)],
+                      [cid for cid, _ in kg_search(query, k)]]
+            return rrf_fuse(routes, top_n=k, weights=[1.0, 1.0, args.kg_weight])
+        if family == "hybrid_kgboost":
+            wide = args.eprior_wide
+            fused = rrf_fuse([[cid for cid, _ in bm25.search(query, k=wide)],
+                              [cid for cid, _ in dense.search(query, k=wide)]], top_n=wide)
+            ppr_scores = dict(kg_search(query, len(chunks)))
+            mx = max(ppr_scores.values(), default=0.0) or 1.0
+            scored = {cid: s + args.kg_boost * ppr_scores.get(cid, 0.0) / mx for cid, s in fused}
+            return sorted(scored.items(), key=lambda kv: -kv[1])[:k]
         if family == "hybrid_wwiki":
             wiki_route = [cid for cid, _ in wiki.search(query, k=k)]
             if args.wiki_depth:
@@ -91,6 +142,8 @@ def _build_searcher(family, bench, chunks, chunk_ids, args, embedder):
                   [cid for cid, _ in dense.search(query, k=k)]]
         if family == "hybrid_wiki":
             routes.append([cid for cid, _ in wiki.search(query, k=k)])
+        if family == "hybrid_kg":
+            routes.append([cid for cid, _ in kg_search(query, k)])
         return rrf_fuse(routes, top_n=k)
 
     return search
@@ -100,7 +153,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--benchmarks", default=",".join(BENCHMARKS))
     ap.add_argument("--modes", default="bm25",
-                    help="逗号分隔：bm25,dense,hybrid,wiki,hybrid_wiki,hybrid_wwiki,hybrid_eprior")
+                    help="逗号分隔：bm25,dense,hybrid,wiki,hybrid_wiki,hybrid_wwiki,hybrid_eprior,"
+                         "kg,hybrid_kg,hybrid_kgw,hybrid_kgboost")
     ap.add_argument("--k-max", type=int, default=max(K_VALUES))
     # hybrid_wwiki 参数
     ap.add_argument("--wiki-weight", type=float, default=0.5, help="wiki 路票权（修订一）")
@@ -109,7 +163,12 @@ def main():
     ap.add_argument("--entry-top", type=int, default=3, help="条目先验命中的条目数")
     ap.add_argument("--entry-boost", type=float, default=0.5, help="条目先验分权重")
     ap.add_argument("--entry-expand", action="store_true", help="从命中条目内部补捞候选")
-    ap.add_argument("--eprior-wide", type=int, default=50, help="先验重排的宽候选池大小")
+    ap.add_argument("--eprior-wide", type=int, default=50, help="宽候选池大小（eprior / kgboost 共用）")
+    # kg 系参数
+    ap.add_argument("--kg-dir", default=REPO_ROOT / "data" / "cache" / "kg")
+    ap.add_argument("--kg-weight", type=float, default=0.5, help="hybrid_kgw 的 kg 路票权")
+    ap.add_argument("--kg-boost", type=float, default=0.05, help="hybrid_kgboost 的先验权重")
+    ap.add_argument("--kg-damping", type=float, default=0.5, help="PPR 阻尼（重启概率 1-damping）")
     ap.add_argument("--raw-dir", default=REPO_ROOT / "data" / "raw")
     ap.add_argument("--samples-dir", default=REPO_ROOT / "data" / "samples")
     ap.add_argument("--corpus-dir", default=REPO_ROOT / "data" / "cache" / "corpus")
@@ -122,7 +181,9 @@ def main():
 
     specs = [m.strip() for m in args.modes.split(",")]
     parsed = [_parse_mode(s, args) for s in specs]
-    needs_vectors = any(f in ("dense", "hybrid", "wiki", "hybrid_wiki", "hybrid_wwiki", "hybrid_eprior")
+    kg_families = ("kg", "hybrid_kg", "hybrid_kgw", "hybrid_kgboost")
+    needs_vectors = any(f in ("dense", "hybrid", "wiki", "hybrid_wiki", "hybrid_wwiki",
+                              "hybrid_eprior") + kg_families
                         for f, _ in parsed)
     embedder = LocalDenseEmbedder(device=args.device) if needs_vectors else None
 

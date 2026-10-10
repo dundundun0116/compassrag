@@ -77,11 +77,18 @@ class LLMClient:
         tel_path = telemetry_path or self.root / cfg.get("telemetry", {}).get("path", "runs/telemetry.jsonl")
         self.telemetry = Telemetry(tel_path)
 
-    def chat(self, messages, *, tag="chat", temperature=0.0, max_tokens=None, model=None) -> LLMResponse:
-        """一次对话调用；messages 为 openai 格式 [{"role": ..., "content": ...}]。"""
+    def chat(self, messages, *, tag="chat", temperature=0.0, max_tokens=None, model=None,
+             thinking: bool | None = None) -> LLMResponse:
+        """一次对话调用；messages 为 openai 格式 [{"role": ..., "content": ...}]。
+
+        thinking=False 显式关闭思维链（网关实测形状 {"thinking": {"type": "disabled"}}，
+        其余参数形状会被静默忽略）——机械任务（抽取/NER）省 token 且不被推理打转拖垮。
+        """
         model = model or self.model
         start = time.perf_counter()
         kwargs = {"max_tokens": max_tokens} if max_tokens else {}
+        if thinking is False:
+            kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
         try:
             resp = self._client.chat.completions.create(
                 model=model, messages=messages, temperature=temperature, **kwargs)
