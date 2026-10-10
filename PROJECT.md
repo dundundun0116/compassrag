@@ -120,3 +120,8 @@
   - **agent 主循环骨架**落地：scripted 固定流程（= 消融关闭态）——多路工具 RRF 融合 → 证据上下文 → 直接生成；L0 端到端评测脚本（EM/F1/证据召回 + 断点续跑）与 `configs/ablation/naive.yaml` 就绪。
   - 三基准全量向量化（146,574 块）后台运行中（nohup → `runs/embed.log`，实测约 18 块/秒，预计 2.5-3 小时，分片可断点续跑）。
   - 遗留：计费生效后 → `smoke_llm.py` 联通验证 → L0 出数（先 BM25-only 观察行，向量完成后跑 hybrid 正式行）。
+- **2026-10-03 · LLM 通道打通（opencode Go）与 L0 启动**
+  - 排查结论：此前 402/403 是**接入方式错误**——Go 订阅网关是 `https://opencode.ai/zen/go/v1`（按量付费的 `/zen/v1` 才报余额不足，同域不同路径）；且 Go 要求客户端带 `x-opencode-session` 会话头 + 自报 User-Agent（从 ZCode 内置 provider 模板与官方文档定位）。
+  - 客户端落地会话头与 UA；`embed()` 未配置 `EMBEDDING_MODEL` 时显式报错（不再静默回退主模型，审查 minor #5 一并修复）；测试 58/58。
+  - **冒烟通过（S1 验收闭环）**：deepseek-v4.1-flash 平均时延约 1.5-2.5s，遥测正常记录；发现该模型带思维链（`reasoning_content`），`answer_max_tokens` 调至 512 防推理吃光预算出空答案。
+  - L0 端到端评测已启动：musique 300 题 BM25 单路观察行（约 3.5s/题，预计 18 分钟出数）。
