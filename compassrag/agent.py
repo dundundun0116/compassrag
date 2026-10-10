@@ -27,6 +27,7 @@ RETRY_NUDGE = ("Conclude now with a few words: the answer if the evidence contai
 class AgentConfig:
     top_k: int = 10
     max_rounds: int = 1          # scripted：固定一轮
+    use_dense: bool = True       # 混合检索：BM25 + 稠密向量两路 RRF（naive 级已含）
     use_rewrite: bool = False    # S4：多跳分解 + HyDE
     use_wiki: bool = False       # S3：wiki 索引视图
     use_decision: bool = False   # S5：LLM 接管控制流

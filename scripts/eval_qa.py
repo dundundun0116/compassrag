@@ -21,6 +21,7 @@ from compassrag.eval.metrics import f1_score, em_score, recall_at_k
 from compassrag.eval.runner import run_records
 from compassrag.llm.client import LLMClient
 from compassrag.retrieval.bm25 import BM25Index
+from compassrag.retrieval.dense import DenseIndex, LocalDenseEmbedder
 
 
 def main():
@@ -31,13 +32,16 @@ def main():
     ap.add_argument("--samples-dir", default=REPO_ROOT / "data" / "samples")
     ap.add_argument("--corpus-dir", default=REPO_ROOT / "data" / "cache" / "corpus")
     ap.add_argument("--index-dir", default=REPO_ROOT / "data" / "cache" / "bm25")
+    ap.add_argument("--embeddings-dir", default=REPO_ROOT / "data" / "cache" / "embeddings")
     ap.add_argument("--out-dir", default=REPO_ROOT / "runs" / "qa")
+    ap.add_argument("--device", default=None, help="dense 查询编码设备（mps / cpu；后台向量化时用 cpu 避免抢 MPS）")
     args = ap.parse_args()
 
     cfg = yaml.safe_load(Path(args.config).read_text(encoding="utf-8"))
     agent_cfg = AgentConfig(**cfg["agent"])
     llm = LLMClient()
     config_name = Path(args.config).stem
+    embedder = LocalDenseEmbedder(device=args.device) if agent_cfg.use_dense else None
 
     summary = {}
     for bench in [b.strip() for b in args.benchmarks.split(",")]:
@@ -51,6 +55,11 @@ def main():
                   if l.strip()]
         store = {c["chunk_id"]: c for c in chunks}
         tools = {"bm25": BM25Index.load(Path(args.index_dir) / f"{bench}__full_dev")}
+        if agent_cfg.use_dense:
+            tools["dense"] = DenseIndex.load(
+                Path(args.embeddings_dir) / f"{bench}__full_dev",
+                [c["chunk_id"] for c in chunks], embedder=embedder)
+        print(f"[{bench}] 语料 {len(chunks)} 块；工具：{list(tools)}")
 
         agent = Agent(llm=llm, tools=tools, chunk_store=store, config=agent_cfg)
 

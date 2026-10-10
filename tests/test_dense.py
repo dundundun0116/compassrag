@@ -1,6 +1,9 @@
-import numpy as np
+import json
 
-from compassrag.retrieval.dense import embed_shards, load_embeddings, plan_shards
+import numpy as np
+import pytest
+
+from compassrag.retrieval.dense import DenseIndex, embed_shards, load_embeddings, plan_shards
 
 
 class FakeEmbedder:
@@ -52,3 +55,52 @@ def test_load_embeddings_stitches_in_order(tmp_path):
     assert mat.shape == (7, 4)
     assert mat[0].tolist() == [0.0, 0.5, 0.0, 1.0]
     assert mat[6].tolist() == [6.0, 6.5, -6.0, 1.0]
+
+
+class DictEmbedder:
+    """按文本查表返回向量的假编码器（正交向量便于断言余弦排序）。"""
+
+    def __init__(self, mapping):
+        self.mapping = mapping
+        self.calls = []
+
+    def encode(self, texts):
+        self.calls.append(list(texts))
+        return np.array([self.mapping[t] for t in texts], dtype=np.float32)
+
+
+def _write_meta(tmp_path, n_chunks, shard_size):
+    (tmp_path / "meta.json").write_text(
+        json.dumps({"n_chunks": n_chunks, "shard_size": shard_size}), encoding="utf-8")
+
+
+def test_dense_index_search_orders_by_cosine(tmp_path):
+    chunk_ids = ["c0", "c1", "c2", "c3"]
+    vectors = [[1, 0, 0], [0, 1, 0], [0, 0, 1], [0.6, 0.8, 0]]
+    for i, v in enumerate(vectors):
+        np.save(tmp_path / f"shard_{i:03d}.npy", np.array([v], dtype=np.float32))
+    _write_meta(tmp_path, 4, 1)
+    emb = DictEmbedder({"q": [0.5, 0.5, 0.0]})
+    idx = DenseIndex.load(tmp_path, chunk_ids, embedder=emb)
+
+    hits = idx.search("q", k=2)
+    assert [cid for cid, _ in hits] == ["c3", "c1"]  # 0.6*0.5+0.8*0.5=0.7 > c0/c1 的 0.5
+    assert hits[0][1] == pytest.approx(0.7)
+    assert emb.calls == [["q"]]
+
+
+def test_dense_index_k_clamped_to_corpus_size(tmp_path):
+    np.save(tmp_path / "shard_000.npy", np.array([[1, 0], [0, 1]], dtype=np.float32))
+    _write_meta(tmp_path, 2, 2)
+    idx = DenseIndex.load(tmp_path, ["c0", "c1"], embedder=DictEmbedder({"q": [1.0, 0.0]}))
+    assert len(idx.search("q", k=10)) == 2
+
+
+def test_dense_index_load_rejects_missing_meta_or_mismatched_corpus(tmp_path):
+    with pytest.raises(FileNotFoundError, match="meta.json"):
+        DenseIndex.load(tmp_path, ["c0"], embedder=DictEmbedder({}))
+
+    np.save(tmp_path / "shard_000.npy", np.array([[1, 0]], dtype=np.float32))
+    _write_meta(tmp_path, 5, 5)
+    with pytest.raises(ValueError, match="不一致"):
+        DenseIndex.load(tmp_path, ["c0"], embedder=DictEmbedder({}))

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""检索召回率评测（无 LLM，纯本地）：BM25 在抽样题上的支撑段落召回。
+"""检索召回率评测（无 LLM，纯本地）：抽样题上的支撑段落召回。
 
-产出 runs/retrieval_bm25/{bench}.jsonl（逐题，可断点续跑）+ 汇总表。
+模式：bm25 / dense / hybrid（两路 RRF 融合）。产出 runs/retrieval_{mode}/{bench}.jsonl
+（逐题，可断点续跑）+ 汇总表。dense/hybrid 需要向量化产物（scripts/embed_corpus.py）。
 """
 
 import argparse
@@ -16,20 +17,56 @@ from compassrag.corpus.benchmarks import BENCHMARKS, load_dev
 from compassrag.eval.metrics import full_hit_at_k, recall_at_k
 from compassrag.eval.runner import run_records
 from compassrag.retrieval.bm25 import BM25Index
+from compassrag.retrieval.dense import DenseIndex, LocalDenseEmbedder
+from compassrag.retrieval.fusion import rrf_fuse
 
 K_VALUES = (5, 10, 20)
+
+
+def _build_searcher(mode, bench, chunks, chunk_ids, args, embedder):
+    """返回 search(query, k) -> [(chunk_id, score)]。"""
+    bm25 = None
+    dense = None
+    if mode in ("bm25", "hybrid"):
+        index_dir = Path(args.index_dir) / f"{bench}__full_dev"
+        if (index_dir / "chunk_ids.json").exists():
+            bm25 = BM25Index.load(index_dir)
+        else:
+            print(f"[{bench}] 建 BM25 索引（{len(chunks)} 块）…")
+            bm25 = BM25Index.build(chunks)
+            bm25.save(index_dir)
+    if mode in ("dense", "hybrid"):
+        dense = DenseIndex.load(Path(args.embeddings_dir) / f"{bench}__full_dev",
+                                chunk_ids, embedder=embedder)
+
+    def search(query, k):
+        if mode == "bm25":
+            return bm25.search(query, k=k)
+        if mode == "dense":
+            return dense.search(query, k=k)
+        routes = [[cid for cid, _ in bm25.search(query, k=k)],
+                  [cid for cid, _ in dense.search(query, k=k)]]
+        return rrf_fuse(routes, top_n=k)
+
+    return search
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--benchmarks", default=",".join(BENCHMARKS))
+    ap.add_argument("--modes", default="bm25", help="逗号分隔：bm25,dense,hybrid")
     ap.add_argument("--k-max", type=int, default=max(K_VALUES))
     ap.add_argument("--raw-dir", default=REPO_ROOT / "data" / "raw")
     ap.add_argument("--samples-dir", default=REPO_ROOT / "data" / "samples")
     ap.add_argument("--corpus-dir", default=REPO_ROOT / "data" / "cache" / "corpus")
     ap.add_argument("--index-dir", default=REPO_ROOT / "data" / "cache" / "bm25")
-    ap.add_argument("--out-dir", default=REPO_ROOT / "runs" / "retrieval_bm25")
+    ap.add_argument("--embeddings-dir", default=REPO_ROOT / "data" / "cache" / "embeddings")
+    ap.add_argument("--out-dir", default=REPO_ROOT / "runs")
+    ap.add_argument("--device", default=None, help="dense 模式的 BGE-M3 设备（mps / cpu）")
     args = ap.parse_args()
+
+    modes = [m.strip() for m in args.modes.split(",")]
+    embedder = LocalDenseEmbedder(device=args.device) if "dense" in modes or "hybrid" in modes else None
 
     summary = {}
     for bench in [b.strip() for b in args.benchmarks.split(",")]:
@@ -40,45 +77,34 @@ def main():
 
         chunks_path = Path(args.corpus_dir) / f"{bench}__full_dev" / "chunks.jsonl"
         chunks = [json.loads(l) for l in chunks_path.read_text().splitlines() if l.strip()]
+        chunk_ids = [c["chunk_id"] for c in chunks]
         title_by_id = {c["chunk_id"]: c["title"] for c in chunks}
 
-        index_dir = Path(args.index_dir) / f"{bench}__full_dev"
-        if (index_dir / "chunk_ids.json").exists():
-            index = BM25Index.load(index_dir)
-        else:
-            print(f"[{bench}] 建 BM25 索引（{len(chunks)} 块）…")
-            index = BM25Index.build(chunks)
-            index.save(index_dir)
+        for mode in modes:
+            search = _build_searcher(mode, bench, chunks, chunk_ids, args, embedder)
 
-        def step_fn(q):
-            hits = index.search(q["question"], k=args.k_max)
-            titles = [title_by_id[cid] for cid, _ in hits]
-            gold = {p["title"] for p in q["paragraphs"] if p["is_supporting"]}
-            row = {"id": q["id"], "stratum": q["stratum"], "gold_titles": sorted(gold)}
-            for k in K_VALUES:
-                row[f"recall@{k}"] = recall_at_k(titles, gold, k)
-                row[f"full_hit@{k}"] = full_hit_at_k(titles, gold, k)
-            row["retrieved_top20"] = titles[:20]
-            return row
+            def step_fn(q, search=search):
+                hits = search(q["question"], k=args.k_max)
+                titles = [title_by_id[cid] for cid, _ in hits]
+                gold = {p["title"] for p in q["paragraphs"] if p["is_supporting"]}
+                row = {"id": q["id"], "stratum": q["stratum"], "gold_titles": sorted(gold)}
+                for k in K_VALUES:
+                    row[f"recall@{k}"] = recall_at_k(titles, gold, k)
+                    row[f"full_hit@{k}"] = full_hit_at_k(titles, gold, k)
+                row[f"retrieved_top{args.k_max}"] = titles[:args.k_max]
+                return row
 
-        out = Path(args.out_dir) / f"{bench}.jsonl"
-        rows, skipped = run_records(sampled, step_fn, out)
-        n = len(rows) + skipped
-        summary[bench] = {
-            m: sum(r[m] for r in rows + _load_existing(out, skipped)) / n
-            for m in (f"recall@{k}" for k in K_VALUES)
-        } | {
-            f"full_hit@{k}": sum(r[f"full_hit@{k}"] for r in rows + _load_existing(out, skipped)) / n
-            for k in K_VALUES
-        }
-        summary[bench]["n"] = n
-        summary[bench]["skipped"] = skipped
+            out = Path(args.out_dir) / f"retrieval_{mode}" / f"{bench}.jsonl"
+            rows, skipped = run_records(sampled, step_fn, out)
+            all_rows = rows + _load_existing(out, skipped)
+            n = len(all_rows)
+            metrics = [f"recall@{k}" for k in K_VALUES] + [f"full_hit@{k}" for k in K_VALUES]
+            summary[(bench, mode)] = {m: sum(r[m] for r in all_rows) / n for m in metrics} | {"n": n}
 
-    print(f"\n{'基准':<10} {'题数':>5} " + " ".join(f"{m:>12}" for m in
-          [f"recall@{k}" for k in K_VALUES] + [f"full_hit@{k}" for k in K_VALUES]))
-    for bench, s in summary.items():
-        print(f"{bench:<10} {s['n']:>5} " + " ".join(f"{s[m]:>12.3f}" for m in
-              [f"recall@{k}" for k in K_VALUES] + [f"full_hit@{k}" for k in K_VALUES]))
+    metrics = [f"recall@{k}" for k in K_VALUES] + [f"full_hit@{k}" for k in K_VALUES]
+    print(f"\n{'基准':<10} {'模式':<8} {'题数':>5} " + " ".join(f"{m:>12}" for m in metrics))
+    for (bench, mode), s in summary.items():
+        print(f"{bench:<10} {mode:<8} {s['n']:>5} " + " ".join(f"{s[m]:>12.3f}" for m in metrics))
 
 
 def _load_existing(out: Path, skipped: int) -> list[dict]:
