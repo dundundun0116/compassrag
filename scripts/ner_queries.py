@@ -24,6 +24,8 @@ from compassrag.llm.client import LLMClient
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--benchmarks", default=",".join(BENCHMARKS))
+    ap.add_argument("--variant", default="samples",
+                    help="语料变体：samples（抽样题小库，默认）/ full_dev")
     ap.add_argument("--concurrency", type=int, default=8)
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--raw-dir", default=REPO_ROOT / "data" / "raw")
@@ -33,7 +35,7 @@ def main():
 
     llm = LLMClient()
     for bench in [b.strip() for b in args.benchmarks.split(",")]:
-        out_dir = Path(args.kg_dir) / f"{bench}__full_dev"
+        out_dir = Path(args.kg_dir) / f"{bench}__{args.variant}"
         out_dir.mkdir(parents=True, exist_ok=True)
         out = out_dir / "query_entities.jsonl"
 

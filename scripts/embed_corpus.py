@@ -23,6 +23,7 @@ from compassrag.retrieval.dense import (
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--benchmarks", default=",".join(BENCHMARKS))
+    ap.add_argument("--variant", default="full_dev", help="语料变体：full_dev / samples")
     ap.add_argument("--corpus-dir", default=REPO_ROOT / "data" / "cache" / "corpus")
     ap.add_argument("--out-dir", default=REPO_ROOT / "data" / "cache" / "embeddings")
     ap.add_argument("--model", default=MODEL_NAME_DEFAULT)
@@ -34,9 +35,9 @@ def main():
     embedder = LocalDenseEmbedder(args.model, device=args.device, batch_size=args.batch_size)
 
     for bench in [b.strip() for b in args.benchmarks.split(",")]:
-        chunks_path = Path(args.corpus_dir) / f"{bench}__full_dev" / "chunks.jsonl"
+        chunks_path = Path(args.corpus_dir) / f"{bench}__{args.variant}" / "chunks.jsonl"
         chunks = [json.loads(l) for l in chunks_path.read_text(encoding="utf-8").splitlines() if l.strip()]
-        out_dir = Path(args.out_dir) / f"{bench}__full_dev"
+        out_dir = Path(args.out_dir) / f"{bench}__{args.variant}"
         total_shards = len(plan_shards(len(chunks), args.shard_size))
 
         t0 = time.time()

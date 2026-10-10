@@ -33,6 +33,8 @@ def _load_done(path: Path) -> set[str]:
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--benchmarks", default="musique")
+    ap.add_argument("--variant", default="samples",
+                    help="语料变体：samples（抽样题小库，默认）/ full_dev（全量 dev，大库）")
     ap.add_argument("--extract", action="store_true", help="Phase A：LLM 逐块抽取")
     ap.add_argument("--finalize", action="store_true", help="Phase B：本地嵌入节点 + 同义边 + 落盘图")
     ap.add_argument("--concurrency", type=int, default=8)
@@ -45,7 +47,7 @@ def main():
         ap.error("至少指定 --extract 或 --finalize 之一")
 
     for bench in [b.strip() for b in args.benchmarks.split(",")]:
-        out_dir = Path(args.kg_dir) / f"{bench}__full_dev"
+        out_dir = Path(args.kg_dir) / f"{bench}__{args.variant}"
         out_dir.mkdir(parents=True, exist_ok=True)
         chunks = [json.loads(l) for l in
                   (Path(args.corpus_dir) / f"{bench}__full_dev" / "chunks.jsonl").read_text(encoding="utf-8").splitlines()
@@ -121,7 +123,7 @@ def _finalize(chunks, out_dir: Path, args) -> None:
         graph.add_extraction(Extraction(chunk_id=row["chunk_id"],
                                         entities=row["entities"], triples=row["triples"]))
     print(f"[finalize] {len(graph.nodes)} 节点 / {len(graph._edges)} 三元组边 / {len(graph.passages)} 块")
-    embedder = LocalDenseEmbedder(device=args.device)
+    embedder = LocalDenseEmbedder(device=args.device, batch_size=128)  # 唯一节点可达十万级
     graph.finalize(embedder, log=print)
     graph.save(out_dir)
     print(f"[finalize] 图已落盘：{out_dir / 'graph.json'} + node_vectors.npy")

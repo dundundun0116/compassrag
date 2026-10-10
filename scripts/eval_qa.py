@@ -29,6 +29,7 @@ from compassrag.retrieval.dense import DenseIndex, LocalDenseEmbedder
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--benchmarks", default=",".join(BENCHMARKS))
+    ap.add_argument("--variant", default="full_dev", help="语料变体：full_dev（默认）/ samples")
     ap.add_argument("--config", default=REPO_ROOT / "configs" / "ablation" / "naive.yaml")
     ap.add_argument("--raw-dir", default=REPO_ROOT / "data" / "raw")
     ap.add_argument("--samples-dir", default=REPO_ROOT / "data" / "samples")
@@ -61,16 +62,16 @@ def main():
             print(f"[{bench}] --limit {args.limit}：分层比例子集 {len(sampled)} 题")
 
         chunks = [json.loads(l) for l in
-                  (Path(args.corpus_dir) / f"{bench}__full_dev" / "chunks.jsonl").read_text(encoding="utf-8").splitlines()
+                  (Path(args.corpus_dir) / f"{bench}__{args.variant}" / "chunks.jsonl").read_text(encoding="utf-8").splitlines()
                   if l.strip()]
         store = {c["chunk_id"]: c for c in chunks}
-        tools = {"bm25": BM25Index.load(Path(args.index_dir) / f"{bench}__full_dev")}
+        tools = {"bm25": BM25Index.load(Path(args.index_dir) / f"{bench}__{args.variant}")}
         if agent_cfg.use_dense:
             tools["dense"] = DenseIndex.load(
-                Path(args.embeddings_dir) / f"{bench}__full_dev",
+                Path(args.embeddings_dir) / f"{bench}__{args.variant}",
                 [c["chunk_id"] for c in chunks], embedder=embedder)
         if agent_cfg.use_wiki:
-            tools["wiki"] = WikiIndex.load(Path(args.wiki_dir) / f"{bench}__full_dev",
+            tools["wiki"] = WikiIndex.load(Path(args.wiki_dir) / f"{bench}__{args.variant}",
                                            dense=tools["dense"], chunks=chunks)
         print(f"[{bench}] 语料 {len(chunks)} 块；工具：{list(tools)}")
 
@@ -95,7 +96,8 @@ def main():
                 "route": r.route, "n_llm_calls": r.n_llm_calls,
             }
 
-        out = Path(args.out_dir) / f"{bench}__{config_name}.jsonl"
+        suffix = "" if args.variant == "full_dev" else f"__{args.variant}"
+        out = Path(args.out_dir) / f"{bench}__{config_name}{suffix}.jsonl"
         rows, skipped = run_records(sampled, step_fn, out)
         all_rows = _load_all(out)
         summary[bench] = _aggregate(all_rows)

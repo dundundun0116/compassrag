@@ -73,7 +73,7 @@ def _build_searcher(family, bench, chunks, chunk_ids, args, embedder):
     ner_cache: dict[str, list[str]] = {}
     if family in ("bm25", "hybrid", "hybrid_wiki", "hybrid_wwiki", "hybrid_eprior",
                   "kg", "hybrid_kg", "hybrid_kgw", "hybrid_kgboost"):
-        index_dir = Path(args.index_dir) / f"{bench}__full_dev"
+        index_dir = Path(args.index_dir) / f"{bench}__{args.variant}"
         if (index_dir / "chunk_ids.json").exists():
             bm25 = BM25Index.load(index_dir)
         else:
@@ -82,13 +82,13 @@ def _build_searcher(family, bench, chunks, chunk_ids, args, embedder):
             bm25.save(index_dir)
     if family in ("dense", "hybrid", "wiki", "hybrid_wiki", "hybrid_wwiki", "hybrid_eprior",
                   "kg", "hybrid_kg", "hybrid_kgw", "hybrid_kgboost"):
-        dense = DenseIndex.load(Path(args.embeddings_dir) / f"{bench}__full_dev",
+        dense = DenseIndex.load(Path(args.embeddings_dir) / f"{bench}__{args.variant}",
                                 chunk_ids, embedder=embedder)
     if family in ("wiki", "hybrid_wiki", "hybrid_wwiki", "hybrid_eprior"):
-        wiki = WikiIndex.load(Path(args.wiki_dir) / f"{bench}__full_dev", dense=dense, chunks=chunks)
+        wiki = WikiIndex.load(Path(args.wiki_dir) / f"{bench}__{args.variant}", dense=dense, chunks=chunks)
     if family in ("kg", "hybrid_kg", "hybrid_kgw", "hybrid_kgboost"):
         from compassrag.index.kg import EntityGraph
-        kg_dir = Path(args.kg_dir) / f"{bench}__full_dev"
+        kg_dir = Path(args.kg_dir) / f"{bench}__{args.variant}"
         kg = EntityGraph.load(kg_dir)
         ner_cache = _load_query_entities(kg_dir)
         print(f"[{bench}] 实体图：{len(kg.nodes)} 节点 / NER 缓存 {len(ner_cache)} 题")
@@ -152,6 +152,7 @@ def _build_searcher(family, bench, chunks, chunk_ids, args, embedder):
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--benchmarks", default=",".join(BENCHMARKS))
+    ap.add_argument("--variant", default="full_dev", help="语料变体：full_dev（默认）/ samples")
     ap.add_argument("--modes", default="bm25",
                     help="逗号分隔：bm25,dense,hybrid,wiki,hybrid_wiki,hybrid_wwiki,hybrid_eprior,"
                          "kg,hybrid_kg,hybrid_kgw,hybrid_kgboost")
@@ -194,7 +195,7 @@ def main():
         sample_ids = {json.loads(l)["id"] for l in sample_file.read_text().splitlines() if l.strip()}
         sampled = [r for r in records if r["id"] in sample_ids]
 
-        chunks_path = Path(args.corpus_dir) / f"{bench}__full_dev" / "chunks.jsonl"
+        chunks_path = Path(args.corpus_dir) / f"{bench}__{args.variant}" / "chunks.jsonl"
         chunks = [json.loads(l) for l in chunks_path.read_text().splitlines() if l.strip()]
         chunk_ids = [c["chunk_id"] for c in chunks]
         title_by_id = {c["chunk_id"]: c["title"] for c in chunks}
@@ -213,7 +214,8 @@ def main():
                 row[f"retrieved_top{args.k_max}"] = titles[:args.k_max]
                 return row
 
-            out = Path(args.out_dir) / f"retrieval_{out_name}" / f"{bench}.jsonl"
+            fname = f"{bench}.jsonl" if args.variant == "full_dev" else f"{bench}_{args.variant}.jsonl"
+            out = Path(args.out_dir) / f"retrieval_{out_name}" / fname
             rows, skipped = run_records(sampled, step_fn, out)
             all_rows = rows + _load_existing(out, skipped)
             n = len(all_rows)
