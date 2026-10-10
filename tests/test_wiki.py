@@ -124,6 +124,32 @@ def test_build_wiki_skips_unparsable_entries(tmp_path):
     assert stats["built"] == 0 and stats["failed"] == 2 and stats["failed_ids"] == ["w0000", "w0001"]
 
 
+def test_build_wiki_falls_back_to_reduced_passages(tmp_path):
+    """阶梯全败后缩到 8 块重试：输入变小、推理负担变轻。"""
+    chunks = _chunks(20)
+
+    class ShrinkLLM(EntryLLM):
+        def __init__(self):
+            super().__init__({"title": "T", "summary": "S", "see_also": []})
+            self.script = ["", "", "", json.dumps(self.payload)]  # 前三轮（阶梯）全空，缩块后成功
+
+        def chat(self, messages, *, tag="chat", temperature=0.0, max_tokens=None, model=None):
+            self.calls.append({"tag": tag, "messages": messages})
+            text = self.script.pop(0) if self.script else ""
+            return LLMResponse(text=text, model="fake", prompt_tokens=1, completion_tokens=1,
+                               total_tokens=2, latency_ms=1.0,
+                               finish_reason="stop" if text else "length")
+
+    llm = ShrinkLLM()
+    stats = build_wiki(chunks, _vectors_two_groups(20), tmp_path / "w", llm, k=1,
+                       chunks_per_entry=16, log=lambda *a: None)
+    assert stats["built"] == 1 and stats["failed"] == 0
+    assert len(llm.calls) == 4
+    full_prompt = llm.calls[0]["messages"][-1]["content"]
+    reduced_prompt = llm.calls[3]["messages"][-1]["content"]
+    assert reduced_prompt.count("[") < full_prompt.count("[")  # 段落数变少
+
+
 def test_build_entry_vectors_and_related():
     entries = [WikiEntry(entry_id="w0", title="A", summary="s", chunk_ids=["c0"]),
                WikiEntry(entry_id="w1", title="B", summary="s", chunk_ids=["c1"]),

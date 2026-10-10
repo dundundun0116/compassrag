@@ -182,6 +182,10 @@ def build_wiki(chunks: list[dict], vectors: np.ndarray, out_dir: Path, llm, *,
                 continue
             rows = sample_representatives(vectors, members, chunks_per_entry)
             parsed = generate_entry(llm, chunks, rows, log=log)
+            if parsed is None and len(rows) > 8:
+                # 阶梯全败多为"输入太大导致推理打转"：缩小到核心 8 块（最靠质心的）再试一次
+                log(f"[{eid}] 阶梯全败，改用前 8 个代表块重试")
+                parsed = generate_entry(llm, chunks, rows[:8], log=log)
             if parsed is None:
                 stats["failed"] += 1
                 stats["failed_ids"].append(eid)

@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """检索召回率评测（无 LLM，纯本地）：抽样题上的支撑段落召回。
 
-模式：bm25 / dense / hybrid（两路 RRF 融合）。产出 runs/retrieval_{mode}/{bench}.jsonl
-（逐题，可断点续跑）+ 汇总表。dense/hybrid 需要向量化产物（scripts/embed_corpus.py）。
+模式：bm25 / dense / hybrid（两路 RRF）/ wiki（三路检索）/ hybrid_wiki（三路 RRF）。
+产出 runs/retrieval_{mode}/{bench}.jsonl（逐题，可断点续跑）+ 汇总表。
+dense/hybrid/wiki 需要向量化产物（scripts/embed_corpus.py）；wiki/hybrid_wiki 还需
+wiki 索引（scripts/build_wiki.py）。
 """
 
 import argparse
@@ -16,6 +18,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from compassrag.corpus.benchmarks import BENCHMARKS, load_dev
 from compassrag.eval.metrics import full_hit_at_k, recall_at_k
 from compassrag.eval.runner import run_records
+from compassrag.index.wiki import WikiIndex
 from compassrag.retrieval.bm25 import BM25Index
 from compassrag.retrieval.dense import DenseIndex, LocalDenseEmbedder
 from compassrag.retrieval.fusion import rrf_fuse
@@ -27,7 +30,8 @@ def _build_searcher(mode, bench, chunks, chunk_ids, args, embedder):
     """返回 search(query, k) -> [(chunk_id, score)]。"""
     bm25 = None
     dense = None
-    if mode in ("bm25", "hybrid"):
+    wiki = None
+    if mode in ("bm25", "hybrid", "hybrid_wiki"):
         index_dir = Path(args.index_dir) / f"{bench}__full_dev"
         if (index_dir / "chunk_ids.json").exists():
             bm25 = BM25Index.load(index_dir)
@@ -35,17 +39,23 @@ def _build_searcher(mode, bench, chunks, chunk_ids, args, embedder):
             print(f"[{bench}] 建 BM25 索引（{len(chunks)} 块）…")
             bm25 = BM25Index.build(chunks)
             bm25.save(index_dir)
-    if mode in ("dense", "hybrid"):
+    if mode in ("dense", "hybrid", "wiki", "hybrid_wiki"):
         dense = DenseIndex.load(Path(args.embeddings_dir) / f"{bench}__full_dev",
                                 chunk_ids, embedder=embedder)
+    if mode in ("wiki", "hybrid_wiki"):
+        wiki = WikiIndex.load(Path(args.wiki_dir) / f"{bench}__full_dev", dense=dense, chunks=chunks)
 
     def search(query, k):
         if mode == "bm25":
             return bm25.search(query, k=k)
         if mode == "dense":
             return dense.search(query, k=k)
+        if mode == "wiki":
+            return wiki.search(query, k=k)
         routes = [[cid for cid, _ in bm25.search(query, k=k)],
                   [cid for cid, _ in dense.search(query, k=k)]]
+        if mode == "hybrid_wiki":
+            routes.append([cid for cid, _ in wiki.search(query, k=k)])
         return rrf_fuse(routes, top_n=k)
 
     return search
@@ -54,19 +64,21 @@ def _build_searcher(mode, bench, chunks, chunk_ids, args, embedder):
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--benchmarks", default=",".join(BENCHMARKS))
-    ap.add_argument("--modes", default="bm25", help="逗号分隔：bm25,dense,hybrid")
+    ap.add_argument("--modes", default="bm25", help="逗号分隔：bm25,dense,hybrid,wiki,hybrid_wiki")
     ap.add_argument("--k-max", type=int, default=max(K_VALUES))
     ap.add_argument("--raw-dir", default=REPO_ROOT / "data" / "raw")
     ap.add_argument("--samples-dir", default=REPO_ROOT / "data" / "samples")
     ap.add_argument("--corpus-dir", default=REPO_ROOT / "data" / "cache" / "corpus")
     ap.add_argument("--index-dir", default=REPO_ROOT / "data" / "cache" / "bm25")
     ap.add_argument("--embeddings-dir", default=REPO_ROOT / "data" / "cache" / "embeddings")
+    ap.add_argument("--wiki-dir", default=REPO_ROOT / "data" / "cache" / "wiki")
     ap.add_argument("--out-dir", default=REPO_ROOT / "runs")
     ap.add_argument("--device", default=None, help="dense 模式的 BGE-M3 设备（mps / cpu）")
     args = ap.parse_args()
 
     modes = [m.strip() for m in args.modes.split(",")]
-    embedder = LocalDenseEmbedder(device=args.device) if "dense" in modes or "hybrid" in modes else None
+    needs_vectors = any(m in modes for m in ("dense", "hybrid", "wiki", "hybrid_wiki"))
+    embedder = LocalDenseEmbedder(device=args.device) if needs_vectors else None
 
     summary = {}
     for bench in [b.strip() for b in args.benchmarks.split(",")]:
