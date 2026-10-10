@@ -1,6 +1,6 @@
 # CompassRAG 项目概述
 
-> 状态：v0.3（2026-10-03）——S1 地基完成；S2 检索半边完成（BM25 召回基线出数）；LLM 通道弃 NIM 改 opencode go（等待接入）。逐单元进展见第 11 节。
+> 状态：v0.3（2026-10-03）——S1 地基完成；S2 检索半边完成 + 向量基础设施与 agent 骨架就绪（本地 BGE-M3 全量向量化后台进行中）；LLM 通道 key 已验证、待 opencode 账户计费生效。逐单元进展见第 11 节。
 
 ## 1. 一句话定位
 
@@ -114,3 +114,9 @@
   - SQuAD 口径 EM/F1 + 支撑段落 recall@k / full_hit@k 指标库；RRF(k=60) 融合 + chunk_id 去重；BM25 检索通路（bm25s，标题+正文联合索引，三基准索引已缓存）；评测骨架（逐题增量落盘 + 断点续跑）。
   - **BM25 检索基线（300×3 实跑）**：hotpotqa recall@5/10/20 = 0.678/0.782/0.847，full_hit@20 = 0.703；2wiki = 0.621/0.674/0.712，full_hit@20 = 0.417；musique = 0.474/0.530/0.589，**full_hit@5 仅 0.157**——naive 单轮检索凑不齐证据的量化证据，消融阶梯的起点数字（`runs/retrieval_bm25/`）。
   - 遗留：生成半边（直接生成答案 → EM/F1 → 完整第 0 级行）等 LLM 通道；向量路 embedding 选型（opencode go 若无 embedding 端点则本地 BGE-M3 兜底）。
+- **2026-10-03 · 通道探测与向量基础设施（等计费期间的零 API 工作）**
+  - opencode zen 接入探测：网关 `https://opencode.ai/zen/v1` 确认，`deepseek-v4.1-flash` 在模型列表中；key 有效但**账户余额不足（402 Insufficient account funds）**，免费层限官方 CLI（403）——待用户处理计费即可跑通。
+  - embedding 选型落定**本地 BGE-M3**（网关无 embedding 端点；NIM 已弃）：冒烟通过（1024 维，中英跨语言相似度 0.877，MPS 可用）；向量基础设施（分片落盘 / 断点续跑 / 拼片加载）完成，测试 56/56。
+  - **agent 主循环骨架**落地：scripted 固定流程（= 消融关闭态）——多路工具 RRF 融合 → 证据上下文 → 直接生成；L0 端到端评测脚本（EM/F1/证据召回 + 断点续跑）与 `configs/ablation/naive.yaml` 就绪。
+  - 三基准全量向量化（146,574 块）后台运行中（nohup → `runs/embed.log`，实测约 18 块/秒，预计 2.5-3 小时，分片可断点续跑）。
+  - 遗留：计费生效后 → `smoke_llm.py` 联通验证 → L0 出数（先 BM25-only 观察行，向量完成后跑 hybrid 正式行）。
