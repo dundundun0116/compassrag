@@ -75,7 +75,7 @@
 |---|---|---|---|
 | S1 地基 | 仓库脚手架；`llm/` 客户端封装（openai 兼容 + 逐 token 遥测）+ LLM 通道联通；embedding 通路；三基准接入与分层抽样（清单入仓）；distractor 语料合并去重 + 分块 | 冒烟调用带遥测记录；抽样清单重跑可复现；语料统计表（块数 / token 数） | ✅ 2026-10-03（冒烟待新通道，见第 11 节） |
 | S2 朴素基线（消融第 0 级） | agent 主循环骨架（scripted 固定流程）；`IndexView` flat 模式（仅 chunk 层）+ BM25 / 向量混合检索 + RRF 融合去重 + 直接生成；`run_eval.py`（限并发 + 断点续跑）+ EM / F1 / 召回率计算 | 主三基准 300×3 出第一组基线数字（消融表 baseline 行） | ◐ hybrid 检索接入（dense 通道验证通过）；生成协议 v3；L0 hybrid musique 部分出数 150/300（可续跑，等发令），2wiki/hotpotqa 待跑 |
-| S3 wiki 索引（③） | 为 agent 发新工具：wiki 式分层摘要索引（聚类 → LLM 生成条目（标题 / 摘要 / 源块 / see-also）→ 链接清洗）；IndexView 三路检索：条目层 + 源块捞回 + 链接扩展，chunk 层兜底 | +③ 行数字（对比 S2 的提升）；索引内容可人工翻阅 | 未开始 |
+| S3 wiki 索引（③） | 为 agent 发新工具：wiki 式分层摘要索引（聚类 → LLM 生成条目（标题 / 摘要 / 源块 / see-also）→ 链接清洗）；IndexView 三路检索：条目层 + 源块捞回 + 链接扩展，chunk 层兜底 | +③ 行数字（对比 S2 的提升）；索引内容可人工翻阅 | ◐ 索引实现完成（聚类/条目生成/链接清洗/三路检索 + 断点续跑，tests 81/81）；冒烟 3 条目质量良好；**全量构建（musique 208 簇）待发令** |
 | S4 查询侧（②） | 为 agent 发新工具：多跳分解 + HyDE 假答案改写（默认开启），接入检索循环 | +② 行数字；消融开关全走 configs | 未开始 |
 | S5 决策层（①） | 控制流交给 LLM——问题路由（直答 / 单跳 / 多跳）、检索计划与预算、充分度早停，全部成为 agent 循环内的决策；同预算对比实验 | +① 行数字；成本遥测报表（检索轮数 / token 分布）；**④ go/no-go 决策点**（三条件见第 9 节） | 未开始 |
 | S6 自诊闭环（④，条件触发） | 证据-论断对齐检查；失败分型；修复动作（换词重查 / 换索引视图 / 拆细）；MultiHop-RAG null query 检测率与拒答 | +④ 行数字与可靠性叙事；若砍 → 降级为 30 例失败分型 case study | 未开始 |
@@ -147,3 +147,9 @@
   - 作废归档：`runs/qa/_invalid_musique__naive_budget512.jsonl`（旧 512 预算）、`_invalid_musique__naive_retryv2.jsonl`（单次重试协议）；两者不可与 v3 行混用。
   - 用户指令（复核）：**评测从简——默认只跑最小必要（优先单基准、能子集不跑全量），长评测先逐个报告**；2wiki/hotpotqa 的 L0 行推迟到 S3 对比需要时再跑。
   - 后台：2wiki 向量化进行中（10/12 片；本地零成本，可随时停/续，hotpotqa 待逐片接续）。
+- **2026-10-10 · S3 wiki 索引实现与冒烟**（tests 81/81；冒烟 LLM 调用 9 次）
+  - 落地三件套：`index/cluster.py`（k-means 聚簇 + 代表块采样（最近质心一半 + 均匀跨越），簇标签缓存 labels.npy）；`index/wiki.py`（LLM 条目生成：预算阶梯 2048/2048/4096 + 链接清洗（see_also 只能取自该簇采样过的标题）；WikiIndex 三路检索 = 条目层（条目向量 cosine）→ 源块捞回（条目成员内 top）→ see-also 标题跳转 + 结构近邻条目；块层兜底由 bm25/dense 路由承担）；`scripts/build_wiki.py`（逐簇增量落盘、断点续跑、meta 参数守卫）+ `configs/ablation/plus_wiki.yaml`（+③ 级）。
+  - 语料事实（决定条目粒度）：三基准语料是"一段一块"结构（musique 17629 标题 / 21118 块，多数标题仅 1 块）→ 默认簇数 k = 块数/100（musique 211 簇），条目 = 主题簇摘要。
+  - 冒烟（musique 前 3 簇）：条目质量良好——「Biographical Profiles」(98 块)、「NASCAR Stock Car Drivers」(79)、「Historic Religious and Monumental Sites」(76)，see_also 全部是簇内真实文章标题（可精确解析到块）。**条目生成同样受思维链预算之害**（首轮 1024 三次全撞上限），改预算阶梯后 3/3 成功；prompt 已加摘要 ≤3 句约束降低截断率。
+  - 覆盖感知抽查（零成本）：已覆盖 253 块（1.2%）时，wiki 路能把首跳 gold 块捞回（Lynn Hung / John Phan 等例），第二跳因覆盖不足无法验证——**+③ 的收益判断需全量构建后再测**。
+  - 待发令：musique 全量构建（剩 208 簇 ≈ 208-500 次调用、约 30-60 分钟、~1-2M token）；2wiki/hotpotqa 暂不构建。

@@ -93,6 +93,20 @@ class DenseIndex:
         self.chunk_ids = chunk_ids
         self.vectors = vectors          # (n, d)，已归一化 → 点积即余弦
         self.embedder = embedder
+        self._row_of = {cid: i for i, cid in enumerate(chunk_ids)}
+
+    def encode_query(self, query: str) -> np.ndarray:
+        return np.asarray(self.embedder.encode([query])[0], dtype=np.float32)
+
+    def top_within(self, qvec: np.ndarray, chunk_ids: list[str], k: int = 10) -> list[tuple[str, float]]:
+        """在候选块集内按余弦取 top-k（供 wiki 条目层捞源块/链接扩展；未知 id 直接忽略）。"""
+        ids = [c for c in chunk_ids if c in self._row_of]
+        if not ids or k <= 0:
+            return []
+        rows = np.array([self._row_of[c] for c in ids], dtype=np.int64)
+        scores = self.vectors[rows] @ qvec
+        order = np.argsort(-scores, kind="stable")[:k]
+        return [(ids[int(i)], float(scores[int(i)])) for i in order]
 
     @classmethod
     def load(cls, dir_path: Path, chunk_ids: list[str], embedder=None,
@@ -113,8 +127,4 @@ class DenseIndex:
         k = min(k, len(self.chunk_ids))
         if k <= 0:
             return []
-        q = np.asarray(self.embedder.encode([query])[0], dtype=np.float32)
-        scores = self.vectors @ q
-        idx = np.argpartition(-scores, k - 1)[:k]
-        idx = idx[np.argsort(-scores[idx], kind="stable")]
-        return [(self.chunk_ids[int(i)], float(scores[i])) for i in idx]
+        return self.top_within(self.encode_query(query), self.chunk_ids, k=k)

@@ -84,7 +84,8 @@ def test_dense_index_search_orders_by_cosine(tmp_path):
     idx = DenseIndex.load(tmp_path, chunk_ids, embedder=emb)
 
     hits = idx.search("q", k=2)
-    assert [cid for cid, _ in hits] == ["c3", "c1"]  # 0.6*0.5+0.8*0.5=0.7 > c0/c1 的 0.5
+    # c3 最高（0.7）；c0/c1 并列 0.5，按行号稳定排序 → c0 在前
+    assert [cid for cid, _ in hits] == ["c3", "c0"]
     assert hits[0][1] == pytest.approx(0.7)
     assert emb.calls == [["q"]]
 

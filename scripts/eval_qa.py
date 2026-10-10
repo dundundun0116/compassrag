@@ -19,6 +19,7 @@ from compassrag.agent import Agent, AgentConfig
 from compassrag.corpus.benchmarks import BENCHMARKS, load_dev
 from compassrag.eval.metrics import f1_score, em_score, recall_at_k
 from compassrag.eval.runner import run_records
+from compassrag.index.wiki import WikiIndex
 from compassrag.llm.client import LLMClient
 from compassrag.retrieval.bm25 import BM25Index
 from compassrag.retrieval.dense import DenseIndex, LocalDenseEmbedder
@@ -33,12 +34,15 @@ def main():
     ap.add_argument("--corpus-dir", default=REPO_ROOT / "data" / "cache" / "corpus")
     ap.add_argument("--index-dir", default=REPO_ROOT / "data" / "cache" / "bm25")
     ap.add_argument("--embeddings-dir", default=REPO_ROOT / "data" / "cache" / "embeddings")
+    ap.add_argument("--wiki-dir", default=REPO_ROOT / "data" / "cache" / "wiki")
     ap.add_argument("--out-dir", default=REPO_ROOT / "runs" / "qa")
     ap.add_argument("--device", default=None, help="dense 查询编码设备（mps / cpu；后台向量化时用 cpu 避免抢 MPS）")
     args = ap.parse_args()
 
     cfg = yaml.safe_load(Path(args.config).read_text(encoding="utf-8"))
     agent_cfg = AgentConfig(**cfg["agent"])
+    if agent_cfg.use_wiki and not agent_cfg.use_dense:
+        raise SystemExit("use_wiki 依赖稠密向量通路（条目层/源块排序）——请同时开启 use_dense")
     llm = LLMClient()
     config_name = Path(args.config).stem
     embedder = LocalDenseEmbedder(device=args.device) if agent_cfg.use_dense else None
@@ -59,6 +63,9 @@ def main():
             tools["dense"] = DenseIndex.load(
                 Path(args.embeddings_dir) / f"{bench}__full_dev",
                 [c["chunk_id"] for c in chunks], embedder=embedder)
+        if agent_cfg.use_wiki:
+            tools["wiki"] = WikiIndex.load(Path(args.wiki_dir) / f"{bench}__full_dev",
+                                           dense=tools["dense"], chunks=chunks)
         print(f"[{bench}] 语料 {len(chunks)} 块；工具：{list(tools)}")
 
         agent = Agent(llm=llm, tools=tools, chunk_store=store, config=agent_cfg)
