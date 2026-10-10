@@ -84,12 +84,23 @@ def test_empty_answer_triggers_nudge_retry_with_bigger_budget():
     assert result.prompt_tokens == 20  # 两次调用聚合
 
 
-def test_empty_after_retry_kept_empty_with_flags():
-    llm = FakeLLM().script(["", ""])
+def test_retry_cascade_escalates_budget_until_answer():
+    llm = FakeLLM().script(["", "", "Paris"])  # 两级重试都在前两次落空
+    agent = Agent(llm, {"bm25": FakeTool(["c1"])}, STORE,
+                  AgentConfig(top_k=1, answer_retry_budgets=(2048, 4096)))
+    result = agent.answer("q")
+    assert result.answer == "Paris" and result.n_calls == 3
+    budgets = [c["max_tokens"] for c in llm.calls]
+    assert budgets == [1024, 2048, 4096]
+    assert result.finish_reasons == ["length", "length", "stop"]
+
+
+def test_empty_after_all_retries_kept_empty_with_flags():
+    llm = FakeLLM().script(["", "", ""])
     agent = Agent(llm, {"bm25": FakeTool(["c1"])}, STORE, AgentConfig(top_k=1))
     result = agent.answer("q")
-    assert result.answer == "" and result.n_calls == 2
-    assert result.finish_reasons == ["length", "length"]
+    assert result.answer == "" and result.n_calls == 3
+    assert result.finish_reasons == ["length", "length", "length"]
 
 
 def test_nonempty_answer_skips_retry():

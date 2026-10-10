@@ -19,8 +19,8 @@ Evidence:
 Question: {question}
 Answer:"""
 
-RETRY_NUDGE = ("Conclude now with a few words: the answer if the evidence contains it, "
-               "otherwise \"unknown\".")
+RETRY_NUDGE = ("Conclude now without further analysis. Do not re-read or re-check the passages. "
+               "Reply with at most 5 words: the answer if the evidence contains it, otherwise \"unknown\".")
 
 
 @dataclass
@@ -31,8 +31,8 @@ class AgentConfig:
     use_rewrite: bool = False    # S4：多跳分解 + HyDE
     use_wiki: bool = False       # S3：wiki 索引视图
     use_decision: bool = False   # S5：LLM 接管控制流
-    answer_max_tokens: int = 1024        # 含思维链；过小会让推理吃光预算、答案为空
-    answer_retry_max_tokens: int = 2048  # 空答案重试的更大预算
+    answer_max_tokens: int = 1024                # 含思维链；过小会让推理吃光预算、答案为空
+    answer_retry_budgets: tuple = (2048, 4096)   # 空答案重试预算阶梯（实测逐级提高可救回打转）
 
 
 @dataclass
@@ -68,10 +68,13 @@ class Agent:
         ]
         resp = self.llm.chat(messages, tag="answer", max_tokens=self.config.answer_max_tokens)
         calls = [resp]
-        # 推理链吃光预算（finish_reason=length）时 content 为空；带收尾提示重试一次可破打转
-        if not resp.text.strip():
+        # 推理链吃光预算（finish_reason=length）时 content 为空；带收尾提示逐级加预算重试，
+        # 实测可破"反复复核"式打转；各级仍空则如实留空（finish_reasons 逐次记录，评测期可查）
+        for budget in self.config.answer_retry_budgets:
+            if resp.text.strip():
+                break
             resp = self.llm.chat(messages + [{"role": "user", "content": RETRY_NUDGE}],
-                                 tag="answer_retry", max_tokens=self.config.answer_retry_max_tokens)
+                                 tag="answer_retry", max_tokens=int(budget))
             calls.append(resp)
         return AgentResult(answer=resp.text.strip(), evidence=evidence, rounds=1,
                            prompt_tokens=sum(c.prompt_tokens for c in calls),
