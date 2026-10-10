@@ -16,6 +16,7 @@ from pathlib import Path
 
 import numpy as np
 
+from ..retrieval.fusion import RRF_K_DEFAULT
 from .cluster import (
     CHUNKS_PER_ENTRY_DEFAULT,
     KMEANS_SEED_DEFAULT,
@@ -272,3 +273,46 @@ class WikiIndex:
 
         ordered = sorted(cand.items(), key=lambda kv: -kv[1])
         return ordered[:k]
+
+    def prior_scores(self, query: str, top_e: int = 3) -> dict[str, float]:
+        """条目层先验（修订二：wiki 只当重排信号，不当竞争路）。
+
+        查询 → 条目余弦 top_e 条目；命中条目的成员块与 see-also 链接标题的块
+        获得 RRF 同款先验分 1/(K+条目名次)，块取其所属条目中的最高（最小）名次分。
+        用法：对混合检索候选 score += boost · prior[cid] 后重排——先验只调座次，
+        不送新候选（补捞见 pullback）。
+        """
+        q = self.dense.encode_query(query)
+        e_scores = self.entry_vectors @ q
+        n_hit = min(top_e, len(self.entries))
+        top = np.argsort(-e_scores, kind="stable")[:n_hit]
+        prior: dict[str, float] = {}
+        for rank, ei in enumerate(top, start=1):
+            s = 1.0 / (RRF_K_DEFAULT + rank)
+            for cid in self.entries[int(ei)].chunk_ids:
+                if s > prior.get(cid, 0.0):
+                    prior[cid] = s
+            for t in self.entries[int(ei)].see_also:
+                for cid in self.title_to_ids.get(t, []):
+                    if s > prior.get(cid, 0.0):
+                        prior[cid] = s
+        return prior
+
+    def pullback(self, query: str, top_e: int = 3, per_entry: int = 3, per_link: int = 2) -> list[str]:
+        """条目内补捞：top_e 条目的成员块 + see-also 链接块中按查询余弦取头部（有序 id）。
+
+        供先验重排的可选候选扩充——只从命中条目内部捞，不再展开近邻条目（区别于 search）。
+        """
+        q = self.dense.encode_query(query)
+        e_scores = self.entry_vectors @ q
+        n_hit = min(top_e, len(self.entries))
+        top = np.argsort(-e_scores, kind="stable")[:n_hit]
+        cand: dict[str, float] = {}
+        for ei in top:
+            e = self.entries[int(ei)]
+            for cid, s in self.dense.top_within(q, e.chunk_ids, k=per_entry):
+                cand[cid] = max(cand.get(cid, -np.inf), s)
+            link_ids = [cid for t in e.see_also for cid in self.title_to_ids.get(t, [])]
+            for cid, s in self.dense.top_within(q, link_ids, k=per_link):
+                cand[cid] = max(cand.get(cid, -np.inf), s)
+        return [cid for cid, _ in sorted(cand.items(), key=lambda kv: -kv[1])]

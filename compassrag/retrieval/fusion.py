@@ -9,16 +9,22 @@ RRF_K_DEFAULT = 60
 NEAR_DUP_THRESHOLD_DEFAULT = 0.92
 
 
-def rrf_fuse(routes: list[list[str]], k: int = RRF_K_DEFAULT, top_n: int | None = None) -> list[tuple[str, float]]:
+def rrf_fuse(routes: list[list[str]], k: int = RRF_K_DEFAULT, top_n: int | None = None,
+             weights: list[float] | None = None) -> list[tuple[str, float]]:
     """routes = 各路检索的 id 有序排名列表；返回 [(id, rrf_score)] 按融合分降序。
 
-    得分 = Σ 1/(k + rank)，rank 从 1 计；同分按首见顺序稳定排序。
+    得分 = Σ w_i/(k + rank)，rank 从 1 计；weights 为各路票权（默认全 1）——
+    质量差的路配低权重，避免其头部块与优质路同权挤占名额。
+    同分按首见顺序稳定排序。
     """
+    if weights is not None:
+        assert len(weights) == len(routes), f"权重数 {len(weights)} != 路数 {len(routes)}"
     scores: dict[str, float] = defaultdict(float)
     first_seen: dict[str, int] = {}
-    for route in routes:
+    for ri, route in enumerate(routes):
+        w = 1.0 if weights is None else float(weights[ri])
         for rank, cid in enumerate(route, start=1):
-            scores[cid] += 1.0 / (k + rank)
+            scores[cid] += w / (k + rank)
             first_seen.setdefault(cid, len(first_seen))
     ordered = sorted(scores.items(), key=lambda kv: (-kv[1], first_seen[kv[0]]))
     return ordered[:top_n] if top_n is not None else ordered

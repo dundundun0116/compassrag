@@ -195,3 +195,18 @@ def test_wiki_search_related_entry_expansion_without_see_also():
 def test_wiki_index_load_requires_built_files(tmp_path):
     with pytest.raises(FileNotFoundError, match="entries.jsonl"):
         WikiIndex.load(tmp_path, dense=_dense_index(), chunks=_chunks(3))
+
+
+def test_wiki_prior_scores_covers_members_and_links():
+    wiki = _wiki_index(see_also=["Gamma"], related=[[], []])
+    prior = wiki.prior_scores("q", top_e=1)
+    # top1 条目 w0 的成员 c0/c1 与其 see-also "Gamma" 的块 c2 都拿先验分 1/(60+1)
+    assert set(prior) == {"c0", "c1", "c2"}
+    assert prior["c0"] == pytest.approx(1.0 / 61) == prior["c2"]
+
+
+def test_wiki_pullback_orders_by_query_cosine():
+    wiki = _wiki_index(see_also=["Gamma"], related=[[], []])
+    # 查询向量 [1,0]：c0 余弦 1.0、c1 0.8、c2 0.0
+    out = wiki.pullback("q", top_e=1, per_entry=2, per_link=1)
+    assert out == ["c0", "c1", "c2"]
