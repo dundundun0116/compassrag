@@ -31,15 +31,19 @@ def main():
             print(f"{mid}{mark}")
         return
 
-    r = client.chat([{"role": "user", "content": "用一句话介绍你自己。"}], tag="smoke")
+    r = client.chat([{"role": "user", "content": "用一句话介绍你自己。"}], tag="smoke", max_tokens=512)
     print(f"chat ok: {r.text!r}")
     print(f"  model={r.model} in={r.prompt_tokens} out={r.completion_tokens} "
           f"latency={r.latency_ms:.0f}ms")
 
-    vecs = client.embed(["CompassRAG 是一个面向多跳问答的检索系统。",
-                         "Adaptive retrieval decides where to search and when to stop."],
-                        tag="smoke")
-    print(f"embed ok: {len(vecs)} vectors, dim={len(vecs[0])}")
+    import os
+    if os.environ.get("EMBEDDING_MODEL"):
+        vecs = client.embed(["CompassRAG 是一个面向多跳问答的检索系统。",
+                             "Adaptive retrieval decides where to search and when to stop."],
+                            tag="smoke")
+        print(f"embed ok: {len(vecs)} vectors, dim={len(vecs[0])}")
+    else:
+        print("embed 跳过：EMBEDDING_MODEL 未配置（本项目走本地 BGE-M3，见 scripts/embed_corpus.py）")
 
     print("\n遥测汇总:")
     for s in summarize(client.telemetry.path):

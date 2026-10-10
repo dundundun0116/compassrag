@@ -6,6 +6,7 @@
 
 import os
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -37,7 +38,7 @@ def batch_texts(texts: list, batch_size: int) -> list[list]:
 
 
 class LLMClient:
-    def __init__(self, repo_root=None, telemetry_path=None):
+    def __init__(self, repo_root=None, telemetry_path=None, session_id=None):
         self.root = Path(repo_root) if repo_root else REPO_ROOT
         load_dotenv(self.root / ".env")
         cfg_path = self.root / "configs" / "models.yaml"
@@ -51,15 +52,24 @@ class LLMClient:
             raise LLMError("缺少 LLM_BASE_URL / LLM_API_KEY / LLM_MODEL——请复制 .env.example 为 .env 并填入真实值")
         self.model = model
 
+        # opencode Go 订阅要求客户端带会话头（路由与 prompt 缓存优化）并自报身份
+        self.session_id = session_id or os.environ.get("OPENCODE_SESSION_ID") or uuid.uuid4().hex[:16]
+        default_headers = {
+            "User-Agent": "CompassRAG/0.1.0",
+            "x-opencode-session": self.session_id,
+        }
+
         timeout = float(req.get("timeout_s", 120))
         retries = int(req.get("max_retries", 4))
-        self._client = OpenAI(base_url=base, api_key=key, timeout=timeout, max_retries=retries)
+        self._client = OpenAI(base_url=base, api_key=key, timeout=timeout, max_retries=retries,
+                              default_headers=default_headers)
 
         e_base = os.environ.get("EMBEDDING_BASE_URL") or base
         e_key = os.environ.get("EMBEDDING_API_KEY") or key
-        self.embedding_model = os.environ.get("EMBEDDING_MODEL") or model
+        self.embedding_model = os.environ.get("EMBEDDING_MODEL") or ""  # 不回退主模型：embed 端点与 chat 不同族
         self._embed_client = self._client if (e_base == base and e_key == key) else \
-            OpenAI(base_url=e_base, api_key=e_key, timeout=timeout, max_retries=retries)
+            OpenAI(base_url=e_base, api_key=e_key, timeout=timeout, max_retries=retries,
+                   default_headers=default_headers)
         self._batch_size = int(cfg.get("embedding", {}).get("batch_size", 96))
 
         tel_path = telemetry_path or self.root / cfg.get("telemetry", {}).get("path", "runs/telemetry.jsonl")

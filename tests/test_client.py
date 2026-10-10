@@ -28,6 +28,8 @@ def test_missing_env_raises_actionable_error(tmp_path, monkeypatch):
 
 
 def test_init_reads_config_and_defaults(tmp_path, monkeypatch):
+    for var in ("LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL", "EMBEDDING_MODEL"):
+        monkeypatch.delenv(var, raising=False)  # 防跨测试的 dotenv 环境残留
     (tmp_path / ".env").write_text(
         "LLM_BASE_URL=https://example.invalid/v1\n"
         "LLM_API_KEY=sk-test\n"
@@ -42,9 +44,29 @@ def test_init_reads_config_and_defaults(tmp_path, monkeypatch):
     )
     client = LLMClient(repo_root=tmp_path)
     assert client.model == "test-model"
-    assert client.embedding_model == "test-model"  # 未单独配置时回退主模型
+    assert client.embedding_model == ""  # 未显式配置不回退主模型（见 embed 报错）
     assert client._batch_size == 7
     assert client.telemetry.path == tmp_path / "runs" / "t.jsonl"
+
+
+def test_client_sends_opencode_session_header_and_ua(tmp_path):
+    client = _make_client(tmp_path)
+    headers = client._client.default_headers
+    assert client.session_id and headers.get("x-opencode-session") == client.session_id
+    assert headers.get("User-Agent", "").startswith("CompassRAG")
+    # 显式传入 session 时可固定；不传则每次实例不同
+    fixed = LLMClient(repo_root=tmp_path, session_id="fixed-123")
+    assert fixed.session_id == "fixed-123"
+
+
+def test_embed_requires_explicit_model(tmp_path, monkeypatch):
+    for var in ("LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL", "EMBEDDING_MODEL"):
+        monkeypatch.delenv(var, raising=False)
+    (tmp_path / ".env").write_text(
+        "LLM_BASE_URL=https://example.invalid/v1\nLLM_API_KEY=sk\nLLM_MODEL=m\n")
+    client = LLMClient(repo_root=tmp_path)
+    with pytest.raises(LLMError, match="EMBEDDING_MODEL"):
+        client.embed(["text"])
 
 
 def test_llm_response_fields():
