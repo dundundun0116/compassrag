@@ -72,6 +72,35 @@ def test_embed_requires_explicit_model(tmp_path, monkeypatch):
 def test_llm_response_fields():
     r = LLMResponse(text="hi", model="m", prompt_tokens=1, completion_tokens=2, total_tokens=3, latency_ms=4.0)
     assert (r.text, r.model, r.total_tokens) == ("hi", "m", 3)
+    assert r.finish_reason == "" and r.reasoning_tokens == 0
+
+
+def _fake_chat_response(content="Paris", finish_reason="length", reasoning_tokens=7):
+    from types import SimpleNamespace as NS
+    details = NS(reasoning_tokens=reasoning_tokens) if reasoning_tokens is not None else None
+    return NS(choices=[NS(message=NS(content=content, reasoning_content="thinking"),
+                          finish_reason=finish_reason)],
+              usage=NS(prompt_tokens=11, completion_tokens=30, total_tokens=41,
+                       completion_tokens_details=details))
+
+
+def test_chat_captures_finish_reason_and_reasoning_tokens(tmp_path):
+    client = _make_client(tmp_path)
+    client._client.chat.completions.create = lambda **kw: _fake_chat_response()
+    r = client.chat([{"role": "user", "content": "hi"}], tag="answer", max_tokens=32)
+    assert r.finish_reason == "length" and r.reasoning_tokens == 7
+    rows = [json.loads(l) for l in (tmp_path / "runs" / "telemetry.jsonl").read_text().splitlines()]
+    assert rows[-1]["finish_reason"] == "length" and rows[-1]["reasoning_tokens"] == 7
+
+
+def test_chat_without_reasoning_details_still_records(tmp_path):
+    client = _make_client(tmp_path)
+    client._client.chat.completions.create = lambda **kw: _fake_chat_response(
+        content="Paris", finish_reason="stop", reasoning_tokens=None)
+    r = client.chat([{"role": "user", "content": "hi"}], tag="answer")
+    assert r.finish_reason == "stop" and r.reasoning_tokens == 0
+    rows = [json.loads(l) for l in (tmp_path / "runs" / "telemetry.jsonl").read_text().splitlines()]
+    assert rows[-1]["finish_reason"] == "stop" and "reasoning_tokens" not in rows[-1]
 
 
 def test_chat_failure_recorded_then_raised(tmp_path):

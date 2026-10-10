@@ -27,6 +27,8 @@ class LLMResponse:
     completion_tokens: int
     total_tokens: int
     latency_ms: float
+    finish_reason: str = ""
+    reasoning_tokens: int = 0
 
 
 class LLMError(RuntimeError):
@@ -89,19 +91,27 @@ class LLMClient:
             raise
         latency = (time.perf_counter() - start) * 1000
         usage = resp.usage
+        choice = resp.choices[0]
+        finish_reason = getattr(choice, "finish_reason", None) or ""
+        details = getattr(usage, "completion_tokens_details", None)
+        reasoning_tokens = getattr(details, "reasoning_tokens", None) if details else None
         row = self.telemetry.record(
             kind="chat", tag=tag, model=model,
             prompt_tokens=getattr(usage, "prompt_tokens", 0),
             completion_tokens=getattr(usage, "completion_tokens", 0),
             total_tokens=getattr(usage, "total_tokens", 0),
-            latency_ms=latency)
+            latency_ms=latency,
+            finish_reason=finish_reason,
+            reasoning_tokens=reasoning_tokens)
         return LLMResponse(
-            text=resp.choices[0].message.content or "",
+            text=choice.message.content or "",
             model=model,
             prompt_tokens=row["prompt_tokens"],
             completion_tokens=row["completion_tokens"],
             total_tokens=row["total_tokens"],
-            latency_ms=latency)
+            latency_ms=latency,
+            finish_reason=finish_reason,
+            reasoning_tokens=row.get("reasoning_tokens", 0) or 0)
 
     def embed(self, texts, *, tag="embed") -> list[list[float]]:
         """批量向量化；按 batch_size 分批，一次遥测行聚合全部用量。"""

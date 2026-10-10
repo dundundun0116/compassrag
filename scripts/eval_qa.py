@@ -65,6 +65,9 @@ def main():
                 "ev_recall": recall_at_k(ev_titles, gold_titles, k=agent_cfg.top_k),
                 "rounds": r.rounds,
                 "prompt_tokens": r.prompt_tokens, "completion_tokens": r.completion_tokens,
+                # 生成协议诊断字段：重试次数与各次 finish_reason（"length"=撞预算上限）
+                "n_calls": r.n_calls, "finish_reasons": r.finish_reasons,
+                "answer_empty": not r.answer.strip(),
             }
 
         out = Path(args.out_dir) / f"{bench}__{config_name}.jsonl"
@@ -73,9 +76,10 @@ def main():
         summary[bench] = _aggregate(all_rows)
         print(f"[{bench}] 完成 {len(rows)} 题（续跑跳过 {skipped}）→ {out}")
 
-    print(f"\n{'基准':<10} {'题数':>5} {'EM':>7} {'F1':>7} {'证据召回':>8} {'均token/题':>10}")
+    print(f"\n{'基准':<10} {'题数':>5} {'EM':>7} {'F1':>7} {'证据召回':>8} {'空答率':>7} {'重试率':>7} {'均token/题':>10}")
     for bench, s in summary.items():
-        print(f"{bench:<10} {s['n']:>5} {s['em']:>7.3f} {s['f1']:>7.3f} {s['ev_recall']:>8.3f} {s['tokens_per_q']:>10.0f}")
+        print(f"{bench:<10} {s['n']:>5} {s['em']:>7.3f} {s['f1']:>7.3f} {s['ev_recall']:>8.3f} "
+              f"{s['empty_rate']:>7.3f} {s['retry_rate']:>7.3f} {s['tokens_per_q']:>10.0f}")
 
 
 def _load_all(out: Path) -> list[dict]:
@@ -92,6 +96,9 @@ def _aggregate(rows: list[dict]) -> dict:
         "f1": sum(r["f1"] for r in rows) / n,
         "ev_recall": sum(r["ev_recall"] for r in rows) / n,
         "tokens_per_q": sum(r["prompt_tokens"] + r["completion_tokens"] for r in rows) / n,
+        # 空答率应趋近 0；非 0 说明生成协议仍被思维链打转拖垮（见 runs/diag/）
+        "empty_rate": sum(1 for r in rows if not r["pred"].strip()) / n,
+        "retry_rate": sum(1 for r in rows if r.get("n_calls", 1) > 1) / n,
     }
 
 

@@ -14,7 +14,8 @@ class Telemetry:
         self._lock = Lock()
 
     def record(self, *, kind, tag, model, prompt_tokens=0, completion_tokens=0,
-               total_tokens=0, latency_ms=0.0, n_items=None, error=None) -> dict:
+               total_tokens=0, latency_ms=0.0, n_items=None, error=None,
+               finish_reason=None, reasoning_tokens=None) -> dict:
         row = {
             "ts": round(time.time(), 3),
             "kind": kind,
@@ -27,6 +28,11 @@ class Telemetry:
         }
         if n_items is not None:
             row["n_items"] = int(n_items)
+        # finish_reason=length 代表撞了预算上限（思维链吃光后可能出空答案）——诊断必需
+        if finish_reason is not None:
+            row["finish_reason"] = str(finish_reason)
+        if reasoning_tokens is not None:
+            row["reasoning_tokens"] = int(reasoning_tokens)
         if error is not None:
             row["error"] = str(error)[:300]
         with self._lock:
