@@ -1,0 +1,8 @@
+# 消融第 0 级：naive —— scripted 单轮固定检索（混合检索路由就绪后自动并入）+ 直接生成
+agent:
+  top_k: 10
+  max_rounds: 1
+  use_rewrite: false
+  use_wiki: false
+  use_decision: false
+  answer_max_tokens: 32
