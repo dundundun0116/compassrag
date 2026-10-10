@@ -91,6 +91,8 @@ def main():
                 "n_calls": r.n_calls, "finish_reasons": r.finish_reasons,
                 "answer_empty": not r.answer.strip(),
                 "n_queries": len(r.queries) or 1,   # ② 开启时 >1（分解 + HyDE 变体数）
+                # ① 决策层诊断字段：路由、全部 LLM 调用数（含 plan/sufficiency）
+                "route": r.route, "n_llm_calls": r.n_llm_calls,
             }
 
         out = Path(args.out_dir) / f"{bench}__{config_name}.jsonl"

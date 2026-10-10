@@ -150,3 +150,69 @@ def test_rewrite_near_dup_merge_drops_duplicate_evidence():
                   AgentConfig(top_k=3, use_rewrite=True))
     result = agent.answer("q")
     assert result.evidence == ["c1", "c3"]  # c2 与 c1 近重被合并
+
+
+# ---- ① 决策形态（S5）----
+
+def _plan_multi(subs):
+    import json as _json
+    return _json.dumps({"route": "multi", "subquestions": subs})
+
+
+def _suf(ok, next_query=""):
+    import json as _json
+    return _json.dumps({"sufficient": ok, "next_query": next_query})
+
+
+def test_agentic_loop_plans_retrieves_early_stops_and_answers():
+    llm = FakeLLM().script([
+        _plan_multi(["Who created it?", "When was that person born?"]),  # plan
+        _suf(False, "Who created it exactly?"),                          # 第 1 轮：不够，给下一查询
+        _suf(True),                                                      # 第 2 轮：够了 → 早停
+        "1819",                                                          # answer
+    ])
+    tool = FakeTool(["c1", "c2", "c3"])
+    agent = Agent(llm, {"bm25": tool}, STORE, AgentConfig(top_k=2, use_decision=True, max_rounds=3))
+    result = agent.answer("When was the creator born?")
+    assert result.answer == "1819"
+    assert result.route == "multi" and result.rounds == 2
+    assert tool.queries == ["Who created it?", "Who created it exactly?"]
+    assert result.queries == ["Who created it?", "Who created it exactly?"]
+    assert [c["tag"] for c in llm.calls] == ["plan", "sufficiency", "sufficiency", "answer"]
+    assert result.n_llm_calls == 4 and result.n_calls == 1
+    assert result.prompt_tokens == 40  # 全部调用聚合（FakeLLM 每次 10 token × 4 次）
+
+
+def test_agentic_loop_respects_max_rounds_budget():
+    llm = FakeLLM().script([
+        _plan_multi(["s1?", "s2?", "s3?"]),
+        _suf(False, "s2?"),   # 一直不够
+        _suf(False, "s3?"),
+        "Paris",              # 预算耗尽后仍作答
+    ])
+    tool = FakeTool(["c1", "c2"])
+    agent = Agent(llm, {"bm25": tool}, STORE, AgentConfig(top_k=2, use_decision=True, max_rounds=2))
+    result = agent.answer("q")
+    assert result.rounds == 2 and result.answer == "Paris"
+    assert len(tool.queries) == 2
+    assert [c["tag"] for c in llm.calls] == ["plan", "sufficiency", "sufficiency", "answer"]
+
+
+def test_agentic_direct_route_skips_retrieval():
+    llm = FakeLLM().script(['{"route": "direct", "subquestions": []}', "Paris"])
+    tool = FakeTool(["c1"])
+    agent = Agent(llm, {"bm25": tool}, STORE, AgentConfig(use_decision=True))
+    result = agent.answer("What is the capital of France?")
+    assert result.route == "direct" and result.rounds == 0 and result.evidence == []
+    assert tool.queries == []
+    assert result.answer == "Paris"
+    assert [c["tag"] for c in llm.calls] == ["plan", "answer"]
+
+
+def test_agentic_single_route_uses_original_question_once():
+    llm = FakeLLM().script(['{"route": "single", "subquestions": []}', _suf(True), "Paris"])
+    tool = FakeTool(["c1"])
+    agent = Agent(llm, {"bm25": tool}, STORE, AgentConfig(use_decision=True, max_rounds=3))
+    result = agent.answer("Who is X?")
+    assert result.rounds == 1 and tool.queries == ["Who is X?"]
+    assert [c["tag"] for c in llm.calls] == ["plan", "sufficiency", "answer"]
