@@ -1,7 +1,12 @@
 import hashlib
 import json
 
-from compassrag.corpus.sample import make_record_stub, stratified_sample, write_samples
+from compassrag.corpus.sample import (
+    make_record_stub,
+    stratified_sample,
+    stratified_subset,
+    write_samples,
+)
 
 
 def _pop(strata_counts):
@@ -67,3 +72,23 @@ def test_write_samples_output_and_manifest(tmp_path):
 def test_make_record_stub_fields():
     stub = make_record_stub("hotpotqa", {"id": "x", "stratum": "hard"})
     assert stub == {"benchmark": "hotpotqa", "id": "x", "stratum": "hard"}
+
+
+def test_stratified_subset_proportional_and_nested():
+    records = _pop({"A": 60, "B": 30, "C": 10})
+    sub30 = stratified_subset(records, 30)
+    counts = {}
+    for r in sub30:
+        counts[r["stratum"]] = counts.get(r["stratum"], 0) + 1
+    assert counts == {"A": 18, "B": 9, "C": 3}
+    # 前缀式收敛：小子集是大子集的子集（先跑子集、后补全量时已完成行可复用）
+    small = {r["id"] for r in stratified_subset(records, 10)}
+    big = {r["id"] for r in stratified_subset(records, 30)}
+    assert small <= big
+
+
+def test_stratified_subset_clamps_and_keeps_layer_order():
+    records = _pop({"A": 5, "B": 3})
+    assert len(stratified_subset(records, 100)) == 8
+    sub = stratified_subset(records, 4)
+    assert [r["id"] for r in sub] == ["A-0000", "A-0001", "A-0002", "B-0000"]

@@ -17,6 +17,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from compassrag.agent import Agent, AgentConfig
 from compassrag.corpus.benchmarks import BENCHMARKS, load_dev
+from compassrag.corpus.sample import stratified_subset
 from compassrag.eval.metrics import f1_score, em_score, recall_at_k
 from compassrag.eval.runner import run_records
 from compassrag.index.wiki import WikiIndex
@@ -36,6 +37,8 @@ def main():
     ap.add_argument("--embeddings-dir", default=REPO_ROOT / "data" / "cache" / "embeddings")
     ap.add_argument("--wiki-dir", default=REPO_ROOT / "data" / "cache" / "wiki")
     ap.add_argument("--out-dir", default=REPO_ROOT / "runs" / "qa")
+    ap.add_argument("--limit", type=int, default=None,
+                    help="只跑分层比例子集的前 N 题（能子集不跑全量；后补全量时按 id 续跑天然复用）")
     ap.add_argument("--device", default=None, help="dense 查询编码设备（mps / cpu；后台向量化时用 cpu 避免抢 MPS）")
     args = ap.parse_args()
 
@@ -53,6 +56,9 @@ def main():
         sample_file = sorted(Path(args.samples_dir).glob(f"{bench}_dev_n*_seed*.jsonl"))[-1]
         sample_ids = {json.loads(l)["id"] for l in sample_file.read_text().splitlines() if l.strip()}
         sampled = [r for r in records if r["id"] in sample_ids]
+        if args.limit:
+            sampled = stratified_subset(sampled, args.limit)
+            print(f"[{bench}] --limit {args.limit}：分层比例子集 {len(sampled)} 题")
 
         chunks = [json.loads(l) for l in
                   (Path(args.corpus_dir) / f"{bench}__full_dev" / "chunks.jsonl").read_text(encoding="utf-8").splitlines()
@@ -84,6 +90,7 @@ def main():
                 # 生成协议诊断字段：重试次数与各次 finish_reason（"length"=撞预算上限）
                 "n_calls": r.n_calls, "finish_reasons": r.finish_reasons,
                 "answer_empty": not r.answer.strip(),
+                "n_queries": len(r.queries) or 1,   # ② 开启时 >1（分解 + HyDE 变体数）
             }
 
         out = Path(args.out_dir) / f"{bench}__{config_name}.jsonl"

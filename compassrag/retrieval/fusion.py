@@ -1,11 +1,12 @@
-"""多路检索结果融合：RRF（倒数排名融合，免调参）+ chunk_id 精确去重。
+"""多路检索结果融合：RRF（倒数排名融合，免调参）+ chunk_id 精确去重 + 近重语义合并。
 
-近重语义去重（embedding 余弦）需要向量通路，接入后补（S2）。
+近重合并（余弦 ≥0.92，② 组件）在向量通路可用后由 agent 启用。
 """
 
 from collections import defaultdict
 
 RRF_K_DEFAULT = 60
+NEAR_DUP_THRESHOLD_DEFAULT = 0.92
 
 
 def rrf_fuse(routes: list[list[str]], k: int = RRF_K_DEFAULT, top_n: int | None = None) -> list[tuple[str, float]]:
@@ -31,3 +32,23 @@ def dedup_by_id(ids: list[str]) -> list[str]:
             seen.add(cid)
             out.append(cid)
     return out
+
+
+def near_dup_merge(ranked: list[tuple[str, float]], vector_fn,
+                   threshold: float = NEAR_DUP_THRESHOLD_DEFAULT) -> list[tuple[str, float]]:
+    """余弦近重合并（②）：保序保留每组排名最高的块；向量缺失的块按不重复处理。
+
+    vector_fn(chunk_id) -> np.ndarray | None；每个候选只与已保留的块比较。
+    """
+    kept: list[tuple[str, float]] = []
+    kept_vecs: list = []
+    for cid, score in ranked:
+        v = vector_fn(cid)
+        if v is None:
+            kept.append((cid, score))
+            continue
+        if any(float(v @ kv) >= threshold for kv in kept_vecs):
+            continue
+        kept.append((cid, score))
+        kept_vecs.append(v)
+    return kept

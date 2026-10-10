@@ -8,7 +8,8 @@ S3/S4 给 tools 加能力（wiki 索引视图 / 改写）；S5 起 use_decision=
 
 from dataclasses import dataclass, field
 
-from .retrieval.fusion import rrf_fuse
+from .query.rewrite import build_query_variants
+from .retrieval.fusion import near_dup_merge, rrf_fuse
 
 ANSWER_PROMPT = """Answer the question based only on the evidence passages below.
 Give a short, direct answer (a few words). If the evidence is insufficient, answer "unknown".
@@ -44,6 +45,7 @@ class AgentResult:
     completion_tokens: int
     finish_reasons: list[str] = field(default_factory=list)
     n_calls: int = 1
+    queries: list[str] = field(default_factory=list)  # 实际用于检索的查询变体（② 开启时 >1）
 
 
 class Agent:
@@ -56,9 +58,16 @@ class Agent:
         self.config = config or AgentConfig()
 
     def answer(self, question: str) -> AgentResult:
-        routes = [tool.search(question, k=self.config.top_k) for tool in self.tools.values()]
-        fused = rrf_fuse([[cid for cid, _ in route] for route in routes], top_n=self.config.top_k)
-        evidence = [cid for cid, _ in fused]
+        variants = build_query_variants(self.llm, question) if self.config.use_rewrite else [question]
+        routes = [[cid for cid, _ in tool.search(v, k=self.config.top_k)]
+                  for v in variants for tool in self.tools.values()]
+        # ② 的近重合并需要向量：候选先取宽（2×top_k）再按余弦 ≥0.92 合并回 top_k
+        vec_fn = getattr(self.tools.get("dense"), "vector", None) if self.config.use_rewrite else None
+        wide = self.config.top_k * 2 if vec_fn is not None else self.config.top_k
+        fused = rrf_fuse(routes, top_n=wide)
+        if vec_fn is not None:
+            fused = near_dup_merge(fused, vec_fn)[:self.config.top_k]
+        evidence = [cid for cid, _ in fused][:self.config.top_k]
 
         messages = [
             {"role": "system",
@@ -80,7 +89,7 @@ class Agent:
                            prompt_tokens=sum(c.prompt_tokens for c in calls),
                            completion_tokens=sum(c.completion_tokens for c in calls),
                            finish_reasons=[c.finish_reason for c in calls],
-                           n_calls=len(calls))
+                           n_calls=len(calls), queries=variants)
 
     def _format(self, evidence_ids: list[str]) -> str:
         lines = []

@@ -42,6 +42,34 @@ def make_record_stub(benchmark: str, record: dict) -> dict:
     return {"benchmark": benchmark, "id": record["id"], "stratum": record["stratum"]}
 
 
+def stratified_subset(records: list[dict], n_total: int, key: str = "stratum") -> list[dict]:
+    """从既有抽样清单里取分层比例子集（评测"能子集不跑全量"用）。
+
+    按层比例（最大余数法）取每层清单顺序的前若干条——不重新抽样，
+    因此子集是全量的前缀式收敛：先跑子集、后补全量时已完成行天然复用（按 id 续跑）。
+    """
+    groups: dict[str, list[dict]] = defaultdict(list)
+    for r in records:
+        groups[r[key]].append(r)
+    strata = sorted(groups)
+    total = sum(len(groups[s]) for s in strata)
+    n_total = min(n_total, total)
+    raw = {s: n_total * len(groups[s]) / total for s in strata}
+    alloc = {s: min(int(raw[s]), len(groups[s])) for s in strata}
+    leftover = n_total - sum(alloc.values())
+    by_frac = sorted(strata, key=lambda s: (-(raw[s] - alloc[s]), s))
+    for s in by_frac:
+        if leftover <= 0:
+            break
+        if alloc[s] < len(groups[s]):
+            alloc[s] += 1
+            leftover -= 1
+    out: list[dict] = []
+    for s in strata:
+        out.extend(groups[s][:alloc[s]])
+    return out
+
+
 def write_samples(benchmark: str, picked: list[dict], allocation: dict[str, int], *,
                   seed: int, out_path: Path, n_population: int,
                   source_path: Path) -> dict:

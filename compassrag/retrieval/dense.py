@@ -98,6 +98,11 @@ class DenseIndex:
     def encode_query(self, query: str) -> np.ndarray:
         return np.asarray(self.embedder.encode([query])[0], dtype=np.float32)
 
+    def vector(self, chunk_id: str):
+        """块向量（供近重合并等使用）；未知 id 返回 None。"""
+        row = self._row_of.get(chunk_id)
+        return None if row is None else self.vectors[row]
+
     def top_within(self, qvec: np.ndarray, chunk_ids: list[str], k: int = 10) -> list[tuple[str, float]]:
         """在候选块集内按余弦取 top-k（供 wiki 条目层捞源块/链接扩展；未知 id 直接忽略）。"""
         ids = [c for c in chunk_ids if c in self._row_of]

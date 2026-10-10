@@ -76,7 +76,7 @@
 | S1 地基 | 仓库脚手架；`llm/` 客户端封装（openai 兼容 + 逐 token 遥测）+ LLM 通道联通；embedding 通路；三基准接入与分层抽样（清单入仓）；distractor 语料合并去重 + 分块 | 冒烟调用带遥测记录；抽样清单重跑可复现；语料统计表（块数 / token 数） | ✅ 2026-10-03（冒烟待新通道，见第 11 节） |
 | S2 朴素基线（消融第 0 级） | agent 主循环骨架（scripted 固定流程）；`IndexView` flat 模式（仅 chunk 层）+ BM25 / 向量混合检索 + RRF 融合去重 + 直接生成；`run_eval.py`（限并发 + 断点续跑）+ EM / F1 / 召回率计算 | 主三基准 300×3 出第一组基线数字（消融表 baseline 行） | ◐ hybrid 检索接入（dense 通道验证通过）；生成协议 v3；L0 hybrid musique 部分出数 150/300（可续跑，等发令），2wiki/hotpotqa 待跑 |
 | S3 wiki 索引（③） | 为 agent 发新工具：wiki 式分层摘要索引（聚类 → LLM 生成条目（标题 / 摘要 / 源块 / see-also）→ 链接清洗）；IndexView 三路检索：条目层 + 源块捞回 + 链接扩展，chunk 层兜底 | +③ 行数字（对比 S2 的提升）；索引内容可人工翻阅 | ◐ 索引实现完成（聚类/条目生成/链接清洗/三路检索 + 断点续跑，tests 81/81）；冒烟 3 条目质量良好；**全量构建（musique 208 簇）待发令** |
-| S4 查询侧（②） | 为 agent 发新工具：多跳分解 + HyDE 假答案改写（默认开启），接入检索循环 | +② 行数字；消融开关全走 configs | 未开始 |
+| S4 查询侧（②） | 为 agent 发新工具：多跳分解 + HyDE 假答案改写（默认开启），接入检索循环 | +② 行数字；消融开关全走 configs | ◐ 实现完成（分解 / HyDE / 多查询×多路 RRF / 近重合并 + 预算阶梯，tests 91/91）；冒烟通过；+② 行数字待跑 |
 | S5 决策层（①） | 控制流交给 LLM——问题路由（直答 / 单跳 / 多跳）、检索计划与预算、充分度早停，全部成为 agent 循环内的决策；同预算对比实验 | +① 行数字；成本遥测报表（检索轮数 / token 分布）；**④ go/no-go 决策点**（三条件见第 9 节） | 未开始 |
 | S6 自诊闭环（④，条件触发） | 证据-论断对齐检查；失败分型；修复动作（换词重查 / 换索引视图 / 拆细）；MultiHop-RAG null query 检测率与拒答 | +④ 行数字与可靠性叙事；若砍 → 降级为 30 例失败分型 case study | 未开始 |
 | S7 全量评测与交付 | 全基准全消融正式表；分题型统计（按跳数深度）；FRAMES 三轴 LLM-judge；README（架构图 + 消融表 + 指南）；CLI 完善 + Streamlit demo；复盘博客；GitHub 重名补查建仓 | 开源交付物齐全，消融表完整 | 未开始 |
@@ -153,3 +153,9 @@
   - 冒烟（musique 前 3 簇）：条目质量良好——「Biographical Profiles」(98 块)、「NASCAR Stock Car Drivers」(79)、「Historic Religious and Monumental Sites」(76)，see_also 全部是簇内真实文章标题（可精确解析到块）。**条目生成同样受思维链预算之害**（首轮 1024 三次全撞上限），改预算阶梯后 3/3 成功；prompt 已加摘要 ≤3 句约束降低截断率。
   - 覆盖感知抽查（零成本）：已覆盖 253 块（1.2%）时，wiki 路能把首跳 gold 块捞回（Lynn Hung / John Phan 等例），第二跳因覆盖不足无法验证——**+③ 的收益判断需全量构建后再测**。
   - 待发令：musique 全量构建（剩 208 簇 ≈ 208-500 次调用、约 30-60 分钟、~1-2M token）；2wiki/hotpotqa 暂不构建。
+- **2026-10-10 · S4 查询侧实现与冒烟**（tests 91/91；冒烟 4 次调用）
+  - `query/rewrite.py`：多跳分解（few-shot 1-4 子问题，剔除与原问题重复项，失败降级为原问题）+ HyDE 假答案改写；两者同用预算阶梯（1024/2048/4096 + 收尾提示）。
+  - agent 主循环：② 开启 = 查询变体（原问题 + 子问题 + HyDE 段落）× 全部检索工具 RRF + 近重合并（余弦 ≥0.92；候选先取 2×top_k 再合并回 top_k）；`AgentResult.queries` 与 eval_qa 的 `n_queries` 供诊断。
+  - `configs/ablation/plus_rewrite.yaml`（+② 级）；新增 `stratified_subset` + `eval_qa --limit N`（分层比例子集、前缀式收敛——先跑子集、后补全量按 id 续跑天然复用），落实"能子集不跑全量"。
+  - 冒烟（musique 2 题，4 次调用）：分解干净（"Who is Sikyona named after?" / "What is that person part of?"）、HyDE 段落含正确实体；多查询融合把 gold 证据从第 3-4 位提到第 2 位（轶事级观察，正式数字待 +② 行）。
+  - 待发令清单（全部为"最小粒度"）：① musique wiki 全量构建（解锁 +③）；② 各消融行按子集跑（建议 `--limit 100`：naive / +② / +③ 各约 100 题），横向可比且省配额；全量 300×3 留到 S7 正式表。

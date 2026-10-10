@@ -109,3 +109,44 @@ def test_nonempty_answer_skips_retry():
     result = agent.answer("q")
     assert result.n_calls == 1 and result.finish_reasons == ["stop"]
     assert [c["tag"] for c in llm.calls] == ["answer"]
+    assert result.queries == ["q"]  # ② 关闭时只有原问题
+
+
+class VectorTool(FakeTool):
+    """带向量的假检索工具（供近重合并路径）。"""
+
+    def __init__(self, ranking, vectors):
+        super().__init__(ranking)
+        self.vectors = vectors
+
+    def vector(self, cid):
+        return self.vectors.get(cid)
+
+
+def test_rewrite_expands_queries_and_searches_every_variant():
+    llm = FakeLLM().script([
+        "- Who created it?\n- When was that person born?",   # decompose
+        "It was created by Someone, born in 1819.",          # hyde
+        "Paris",                                            # answer
+    ])
+    tool = FakeTool(["c1", "c2"])
+    agent = Agent(llm, {"bm25": tool}, STORE, AgentConfig(top_k=2, use_rewrite=True))
+    result = agent.answer("When is the birthday of the creator of it?")
+    assert result.answer == "Paris"
+    assert result.queries[0] == "When is the birthday of the creator of it?"
+    assert len(result.queries) == 4  # 原问题 + 2 子问题 + HyDE
+    assert len(tool.queries) == 4    # 每个变体都检索了
+    assert tool.queries[-1].startswith("It was created by")
+
+
+def test_rewrite_near_dup_merge_drops_duplicate_evidence():
+    import numpy as np
+    llm = FakeLLM().script(["", ""])  # 分解/HyDE 都失败 → 只有原问题，走融合+合并
+    vecs = {"c1": np.array([1.0, 0.0], dtype=np.float32),
+            "c2": np.array([0.99, 0.05], dtype=np.float32),  # 与 c1 近重（cos>0.92）
+            "c3": np.array([0.0, 1.0], dtype=np.float32)}
+    tool = VectorTool(["c1", "c2", "c3"], vecs)
+    agent = Agent(llm, {"bm25": tool, "dense": tool}, STORE,
+                  AgentConfig(top_k=3, use_rewrite=True))
+    result = agent.answer("q")
+    assert result.evidence == ["c1", "c3"]  # c2 与 c1 近重被合并
